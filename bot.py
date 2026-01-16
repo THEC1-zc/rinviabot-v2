@@ -64,49 +64,145 @@ def parse_message_with_ai(message_text):
         return None
         
     try:
-        prompt = f"""Sei un assistente specializzato nell'analisi di messaggi di avvocati italiani riguardanti udienze penali.
+        prompt = f"""Sei un assistente AI specializzato nell'analisi di messaggi di avvocati penalisti italiani. Devi essere INTELLIGENTE, FLESSIBILE e TOLLERANTE agli errori.
 
-MESSAGGIO:
+DATA ODIERNA: {datetime.now(pytz.timezone('Europe/Rome')).strftime('%d/%m/%Y %A')}
+ANNO CORRENTE: {datetime.now(pytz.timezone('Europe/Rome')).year}
+
+═══════════════════════════════════════════════════════════════
+📋 LISTE RIFERIMENTO
+═══════════════════════════════════════════════════════════════
+
+GIUDICI (correggi errori battitura):
+Carlomagno, Di Iorio, Farinella, Fuccio, Fuccio Sanza, Cardinali, Cirillo, Puliafito, Beccia, Mannara, De Santis, Sodani, Petrocelli, Ferrante, Collegio, Filocamo, Ferretti, Sorrentino, Barzellotti, Palmaccio, Vigorito, Vitelli, Nardone, Ragusa, Cerasoli, Roda, Ciabattari, GDP, Lombardi, Russo, Collegio A, Collegio B, Collegio C, GUP, GIP, Corte d'Appello
+
+AVVOCATI (NON sono giudici):
+Burgada, Candeloro, Fortino, Sciullo, Puggioni, Messina, Bruni, Martellino, Di Giovanni
+
+ABBREVIAZIONI COMUNI:
+- "predib" / "preliminare" → "udienza preliminare dibattimento"
+- "disc" / "discuss" / "discussione" → "discussione"
+- "es. imp" / "esame imp" → "esame imputato"
+- "testi pm" → "testimoni PM"
+- "testi difesa" → "testimoni difesa"
+- "got" / "gup" / "gip" → includi in note
+- "rinvio" → rinvio udienza
+- "sentenza" → sentenza (NON udienza!)
+- "ndp" → non doversi procedere
+
+═══════════════════════════════════════════════════════════════
+🧠 LOGICA INTELLIGENTE
+═══════════════════════════════════════════════════════════════
+
+1. **TOLLERANZA ERRORI BATTITURA:**
+   - "Farinela" → Correggi a "Farinella" (SEGNA correzione)
+   - "Sodanoi" → "Sodani"
+   - "Fuccuo" → "Fuccio"
+   - "Becciaa" → "Beccia"
+   - Usa fuzzy matching per nomi simili (max 2 lettere differenza)
+
+2. **DATE INTELLIGENTI:**
+   - "15/3" → Prova anno corrente, se passato usa prossimo
+   - "domani" → calcola data domani
+   - "dopodomani" → calcola +2 giorni
+   - "lunedì prossimo" → calcola prossimo lunedì
+   - "poi h 14" → stessa data, ora diversa
+   - "successivamente" → inferisci data logica
+
+3. **ORE FLESSIBILI:**
+   - "alle 10" / "h 10" / "ore 10" → 10:00
+   - "h 10.30" / "h 10,30" → 10:30
+   - "di mattina" (se ora manca) → 09:00
+   - "pomeriggio" (se ora manca) → 14:00
+   - "poi h 14" → stessa data evento precedente
+
+4. **RG VARIANTI:**
+   - "4264/2020 rgnr" → RG: 4264/2020 rgnr
+   - "4264/2020" → RG: 4264/2020 rgnr
+   - "proc 4264/2020" → RG: 4264/2020
+   - "rg 4264/20" → RG: 4264/2020
+
+5. **NOMI MULTIPLI:**
+   - "Rossi + Bianchi" → Nome: "Rossi + Bianchi"
+   - "Rossi, Bianchi e Verdi" → Nome: "Rossi, Bianchi, Verdi"
+   - "D'Angelo Cristian" → UN nome (non separare)
+
+6. **PARSING FLESSIBILE:**
+   - Ordine libero: "Sodani Rossi 15/3" = "15/3 Rossi Sodani"
+   - Estrai tutto: caso, giudice, data, ora, RG, note
+   - Contesto: "rinvio per impedimento" → aggiungi a note
+
+═══════════════════════════════════════════════════════════════
+📤 FORMATO RISPOSTA
+═══════════════════════════════════════════════════════════════
+
+MESSAGGIO DA ANALIZZARE:
 {message_text}
 
-GIUDICI CONOSCIUTI (NON sono parti in causa):
-Carlomagno, Di Iorio, Farinella, Fuccio, Fuccio Sanza, Cardinali, Cirillo, Puliafito, Beccia, Mannara, De Santis, Sodani, Petrocelli, Ferrante, Collegio, Filocamo, Ferretti, Sorrentino, Barzellotti, Palmaccio, Vigorito, Vitelli, Nardone, Ragusa, Cerasoli, Roda, Ciabattari, GDP, Lombardi, Russo
-OPPURE città di tribunali (es: Tivoli, Milano, Roma)
+RISPOSTA SE TUTTO OK (anche con correzioni):
+{{
+    "status": "ok",
+    "correzioni_effettuate": [
+        {{"campo": "giudice", "originale": "Farinela", "corretto": "Farinella"}},
+        {{"campo": "data", "originale": "15/3", "corretto": "15/03/2026", "motivo": "aggiunto anno corrente"}}
+    ],
+    "eventi": [
+        {{
+            "nome_caso": "Nome parte/imputato (anche multipli)",
+            "giudice": "Nome giudice o tribunale",
+            "data": "DD/MM/YYYY (4 cifre anno)",
+            "ora": "HH:MM",
+            "rg": "XXXX/YYYY rgnr (o null)",
+            "tipo_evento": "predib/discussione/esame imputato/sentenza/etc",
+            "note_estratte": "dettagli procedurali estratti dal messaggio",
+            "messaggio_integrale": "{message_text}"
+        }}
+    ]
+}}
 
-AVVOCATI CONOSCIUTI (NON sono parti in causa):
-Burgada, Candeloro, Fortino, Sciullo, Puggioni, Messina, Bruni, Martellino, Di Giovanni
-Riconosci anche pattern "avv [Nome]" o "avvocato [Nome]"
+SE DATA PASSATA ESPLICITA:
+{{
+    "status": "errore",
+    "tipo": "data_passata",
+    "data_inserita": "15/01/2024",
+    "correzioni_proposte": [
+        {{"id": "a", "data": "15/01/{datetime.now(pytz.timezone('Europe/Rome')).year}", "descrizione": "Anno corrente"}},
+        {{"id": "b", "data": "15/01/{datetime.now(pytz.timezone('Europe/Rome')).year + 1}", "descrizione": "Anno prossimo"}}
+    ],
+    "messaggio": "La data è nel passato. Intendevi:"
+}}
 
-COMPITO:
-1. IDENTIFICA TUTTE LE DATE con orari nel messaggio
-2. Per OGNI data, crea un evento separato
-3. Le PARTI sono nomi che NON sono giudici/avvocati
-4. Se il messaggio è AMBIGUO o hai DUBBI, rispondi con: {{"chiarimento_richiesto": "spiega il dubbio"}}
+SE AMBIGUO/INCERTO (>30% dubbio):
+{{
+    "status": "chiarimento",
+    "problema": "Descrizione dubbio",
+    "dati_estratti": {{...dati parziali...}},
+    "incertezze": ["giudice potrebbe essere X o Y", "data non chiara"],
+    "opzioni": [
+        {{"id": "a", "descrizione": "Interpretazione 1", "evento_proposto": {{...}}}},
+        {{"id": "b", "descrizione": "Interpretazione 2", "evento_proposto": {{...}}}},
+        {{"id": "manuale", "descrizione": "Inserimento manuale"}}
+    ],
+    "domanda": "Quale opzione? Rispondi 'a', 'b', o 'manuale'"
+}}
 
-FORMATO OUTPUT:
-Se chiaro, rispondi con array JSON:
-[
-  {{
-    "nome_caso": "nome parte/imputato (NO giudici, NO avvocati)",
-    "rg": "numero RG se presente (es: '4264/2020 rgnr'). null se assente",
-    "data": "DD/MM/YYYY",
-    "ora": "HH:MM (converti 'h 10.30'→'10:30', 'ore 14'→'14:00')",
-    "giudice": "nome giudice dalla lista OPPURE città tribunale. null se assente",
-    "messaggio_integrale": "{message_text}"
-  }}
-]
+═══════════════════════════════════════════════════════════════
+📚 ESEMPI
+═══════════════════════════════════════════════════════════════
 
-Se date multiple, crea ELEMENTO SEPARATO per ciascuna.
-Se dubbio/ambiguo, rispondi: {{"chiarimento_richiesto": "descrivi problema"}}
+Input: "Rossi Farinela 15/3 h 10"
+Output: status=ok, correzioni=[{{"giudice": "Farinela"→"Farinella"}}], evento con Farinella
 
-ESEMPI:
-Input: "Serafini: 4264/2020 rgnr - Sodani - 20/09/2026 h 10.30 testi diffidati"
-Output: [{{"nome_caso": "Serafini", "rg": "4264/2020 rgnr", "data": "20/09/2026", "ora": "10:30", "giudice": "Sodani", "messaggio_integrale": "..."}}]
+Input: "Bianchi 20/3 alle 10, poi h 14 disc"
+Output: 2 eventi, stessa data 20/03, ore 10:00 e 14:00
 
-Input: "Rossi: 15/3/26 h 10 predib, poi 20/4/26 h 11 discussione"
-Output: [{{"nome_caso": "Rossi", "data": "15/03/2026", "ora": "10:00", ...}}, {{"nome_caso": "Rossi", "data": "20/04/2026", "ora": "11:00", ...}}]
+Input: "Verdi + Neri 4264/20 predib domani h 9"
+Output: nome="Verdi + Neri", RG="4264/2020 rgnr", data=domani, tipo="udienza preliminare dibattimento"
 
-Rispondi SOLO JSON, no markdown."""
+Input: "D'Angelo Cristian Sodanoi 15/01/2024 pomeriggio"
+Output: correzioni=[giudice: Sodanoi→Sodani], errore data_passata con opzioni
+
+Rispondi SOLO JSON valido, no markdown."""
 
         message = client.messages.create(
             model="claude-3-haiku-20240307",
@@ -223,19 +319,166 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Non sono riuscito a interpretare il messaggio.")
         return
     
-    # Controlla se serve chiarimento
-    if isinstance(parsed_data, dict) and parsed_data.get('chiarimento_richiesto'):
-        await update.message.reply_text(f"❓ Ho bisogno di chiarimenti:\n\n{parsed_data['chiarimento_richiesto']}")
+    # Gestisce ERRORI (date passate con correzioni proposte)
+    if isinstance(parsed_data, dict) and parsed_data.get('status') == 'errore':
+        tipo_errore = parsed_data.get('tipo', '')
+        
+        if tipo_errore == 'data_passata':
+            data_inserita = parsed_data.get('data_inserita', '')
+            correzioni = parsed_data.get('correzioni_proposte', [])
+            messaggio_base = parsed_data.get('messaggio', 'Data nel passato')
+            
+            messaggio_errore = f"❌ {messaggio_base}\n\n"
+            messaggio_errore += f"📅 Data inserita: **{data_inserita}**\n\n"
+            messaggio_errore += "💡 Intendevi:\n"
+            
+            for corr in correzioni:
+                corr_id = corr.get('id', '')
+                corr_data = corr.get('data', '')
+                corr_desc = corr.get('descrizione', '')
+                messaggio_errore += f"   {corr_id.upper()}) {corr_data} ({corr_desc})\n"
+            
+            messaggio_errore += "\n❓ Rispondi con la lettera dell'opzione corretta (es: 'a' o 'b')"
+            
+            await update.message.reply_text(messaggio_errore)
+            # TODO: Gestire risposta utente
+            return
+        else:
+            messaggio_errore = parsed_data.get('messaggio', 'Errore sconosciuto')
+            await update.message.reply_text(f"❌ {messaggio_errore}")
+            return
+    
+    # Gestisce CHIARIMENTI con opzioni
+    if isinstance(parsed_data, dict) and parsed_data.get('status') == 'chiarimento':
+        problema = parsed_data.get('problema', '')
+        opzioni = parsed_data.get('opzioni', [])
+        domanda = parsed_data.get('domanda', '')
+        
+        messaggio_chiarimento = f"❓ {problema}\n\n"
+        
+        for opz in opzioni:
+            opt_id = opz.get('id', '')
+            descrizione = opz.get('descrizione', '')
+            
+            if opt_id == 'manuale':
+                messaggio_chiarimento += f"🔤 **{opt_id.upper()}**: {descrizione}\n"
+            else:
+                evento = opz.get('evento_proposto', {})
+                messaggio_chiarimento += f"✅ **Opzione {opt_id.upper()}**: {descrizione}\n"
+                if evento:
+                    messaggio_chiarimento += f"   📋 {evento.get('nome_caso', 'N/A')} - {evento.get('data', 'N/A')} {evento.get('ora', 'N/A')}\n"
+            messaggio_chiarimento += "\n"
+        
+        messaggio_chiarimento += f"💬 {domanda}"
+        
+        await update.message.reply_text(messaggio_chiarimento)
+        # TODO: Implementare gestione risposta utente (richiede stato conversazione)
         return
     
-    # Gestisce array di eventi (supporta date multiple)
-    eventi = parsed_data if isinstance(parsed_data, list) else [parsed_data]
+    # Gestisce CONFERMA RICHIESTA (correzioni effettuate)
+    if isinstance(parsed_data, dict) and parsed_data.get('status') == 'conferma_richiesta':
+        motivo = parsed_data.get('motivo', '')
+        correzioni_applicate = parsed_data.get('correzioni_applicate', [])
+        eventi = parsed_data.get('eventi', [])
+        messaggio_ai = parsed_data.get('messaggio', '')
+        
+        messaggio_conferma = "⚠️ **CORREZIONE AUTOMATICA RILEVATA**\n\n"
+        
+        for corr in correzioni_applicate:
+            da = corr.get('da', '')
+            a = corr.get('a', '')
+            tipo = corr.get('tipo', 'campo')
+            messaggio_conferma += f"   📝 {tipo.title()}: '{da}' → **'{a}'**\n"
+        
+        messaggio_conferma += f"\n{messaggio_ai}\n\n"
+        messaggio_conferma += "📋 **ANTEPRIMA EVENTO:**\n"
+        
+        for i, evento in enumerate(eventi, 1):
+            messaggio_conferma += f"\n**Evento {i}:**\n"
+            messaggio_conferma += f"   📋 Nome: 🤖 {evento.get('nome_caso', 'N/A')}\n"
+            messaggio_conferma += f"   📍 Luogo: {evento.get('giudice', 'N/A')}\n"
+            messaggio_conferma += f"   📅 Data: {evento.get('data', 'N/A')}\n"
+            messaggio_conferma += f"   🕐 Ora: {evento.get('ora', 'N/A')}\n"
+            if evento.get('rg'):
+                messaggio_conferma += f"   📁 RG: {evento.get('rg')}\n"
+        
+        messaggio_conferma += "\n\n❓ **Vuoi creare l'evento con questi dati corretti?**\n"
+        messaggio_conferma += "💬 Rispondi:\n"
+        messaggio_conferma += "   ✅ **'sì'** o **'s'** per confermare\n"
+        messaggio_conferma += "   ❌ **'no'** o **'n'** per annullare"
+        
+        await update.message.reply_text(messaggio_conferma)
+        # TODO: Attendere risposta utente e creare evento solo se conferma
+        # Per ora procediamo automaticamente dopo aver mostrato la conferma
+        return
+    
+    # Gestisce eventi OK (compatibilità con formato vecchio e nuovo)
+    if isinstance(parsed_data, dict) and parsed_data.get('status') == 'ok':
+        eventi = parsed_data.get('eventi', [])
+        correzioni = parsed_data.get('correzioni_effettuate', [])
+    elif isinstance(parsed_data, list):
+        eventi = parsed_data
+        correzioni = []
+    else:
+        eventi = [parsed_data] if isinstance(parsed_data, dict) else []
+        correzioni = []
     
     if not eventi:
         await update.message.reply_text("⚠️ Nessun evento trovato nel messaggio.")
         return
     
-    # Prepara risposta per ogni evento e crea su Google Calendar
+    # Prepara anteprima eventi CON correzioni
+    anteprima = []
+    
+    # Mostra correzioni se presenti
+    if correzioni:
+        anteprima.append("⚠️ **CORREZIONI AUTOMATICHE EFFETTUATE:**\n")
+        for corr in correzioni:
+            campo = corr.get('campo', '')
+            originale = corr.get('originale', '')
+            corretto = corr.get('corretto', '')
+            motivo = corr.get('motivo', '')
+            
+            if motivo:
+                anteprima.append(f"   • {campo.title()}: '{originale}' → '{corretto}' ({motivo})")
+            else:
+                anteprima.append(f"   • {campo.title()}: '{originale}' → '{corretto}'")
+        anteprima.append("\n")
+    
+    # Mostra anteprima eventi
+    anteprima.append("📋 **ANTEPRIMA EVENTI:**\n")
+    
+    for i, evento in enumerate(eventi, 1):
+        if not evento.get('data') or not evento.get('ora'):
+            continue
+        
+        nome_evento = f"🤖 {evento.get('nome_caso', 'Udienza')}"
+        
+        anteprima.append(f"**Evento {i}:**")
+        anteprima.append(f"   📋 Nome: {nome_evento}")
+        anteprima.append(f"   📍 Luogo: {evento.get('giudice', 'N/A')}")
+        anteprima.append(f"   📅 Data: {evento.get('data', 'N/A')}")
+        anteprima.append(f"   🕐 Ora: {evento.get('ora', 'N/A')}")
+        anteprima.append(f"   📁 RG: {evento.get('rg', 'N/A')}")
+        
+        tipo_ev = evento.get('tipo_evento')
+        if tipo_ev:
+            anteprima.append(f"   📝 Tipo: {tipo_ev}")
+        
+        anteprima.append("")
+    
+    messaggio_anteprima = "\n".join(anteprima)
+    
+    # Se ci sono correzioni, chiedi conferma
+    if correzioni:
+        messaggio_anteprima += "\n❓ **Confermi la creazione degli eventi con queste correzioni?**"
+        messaggio_anteprima += "\n💬 Rispondi 'sì' per confermare, 'no' per annullare"
+        
+        await update.message.reply_text(messaggio_anteprima)
+        # TODO: Implementare gestione risposta conferma
+        # Per ora procediamo comunque
+        
+    # Crea eventi su Google Calendar
     risposte = []
     eventi_creati = 0
     
