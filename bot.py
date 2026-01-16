@@ -75,7 +75,7 @@ Output: [{{"nome_caso": "Serafini", "rg": "4264/2020 rgnr", "data": "20/09/2026"
 Input: "Rossi: 15/3/26 h 10 predib, poi 20/4/26 h 11 discussione"
 Output: [{{"nome_caso": "Rossi", "data": "15/03/2026", "ora": "10:00", ...}}, {{"nome_caso": "Rossi", "data": "20/04/2026", "ora": "11:00", ...}}]
 
-Rispondi SOLO JSON, no markdown.
+Rispondi SOLO JSON, no markdown."""
 
         message = client.messages.create(
             model="claude-3-haiku-20240307",
