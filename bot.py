@@ -136,28 +136,64 @@ ABBREVIAZIONI COMUNI:
 📤 FORMATO RISPOSTA
 ═══════════════════════════════════════════════════════════════
 
+═══════════════════════════════════════════════════════════════
+🤖 LOGICA CORREZIONE ERRORI
+═══════════════════════════════════════════════════════════════
+
+IMPORTANTE: Chiedi conferma SOLO se NON sei sicuro!
+
+**CORREZIONI AUTOMATICHE (sicurezza >90%):**
+Procedi con status "ok" e crea evento direttamente:
+- "Farinela" → "Farinella" (1 lettera differenza, nome noto)
+- "Sodanoi" → "Sodani" (1-2 lettere, ovvio)
+- "Fuccuo" → "Fuccio" (evidente typo)
+- "Becciaa" → "Beccia" (doppia lettera)
+- "15/3" → "15/03/2026" (aggiunta anno standard)
+
+**RICHIEDI CONFERMA (sicurezza <90%):**
+Usa status "conferma_richiesta":
+- "Marino" → "Mariani"? o "Marino"? (ambiguo)
+- "Rossi" + giudice non nella lista → Conferma interpretazione
+- Data ambigua: "3/4" → 03/04 o 04/03?
+- Più interpretazioni plausibili
+
+REGOLA D'ORO: 
+- Se correzione è OVVIA → status "ok" (procedi)
+- Se hai DUBBI → status "conferma_richiesta"
+
+═══════════════════════════════════════════════════════════════
+📤 FORMATO RISPOSTA
+═══════════════════════════════════════════════════════════════
+
 MESSAGGIO DA ANALIZZARE:
 {message_text}
 
-RISPOSTA SE TUTTO OK (anche con correzioni):
+RISPOSTA SE TUTTO OK (anche con correzioni ovvie):
 {{
     "status": "ok",
-    "correzioni_effettuate": [
-        {{"campo": "giudice", "originale": "Farinela", "corretto": "Farinella"}},
-        {{"campo": "data", "originale": "15/3", "corretto": "15/03/2026", "motivo": "aggiunto anno corrente"}}
-    ],
     "eventi": [
         {{
-            "nome_caso": "Nome parte/imputato (anche multipli)",
-            "giudice": "Nome giudice o tribunale",
-            "data": "DD/MM/YYYY (4 cifre anno)",
+            "nome_caso": "Nome parte/imputato",
+            "giudice": "Nome giudice",
+            "data": "DD/MM/YYYY",
             "ora": "HH:MM",
             "rg": "XXXX/YYYY rgnr (o null)",
-            "tipo_evento": "predib/discussione/esame imputato/sentenza/etc",
-            "note_estratte": "dettagli procedurali estratti dal messaggio",
+            "tipo_evento": "predib/discussione/esame/etc",
+            "note_estratte": "dettagli procedurali",
             "messaggio_integrale": "{message_text}"
         }}
     ]
+}}
+
+SE NON SEI SICURO (correzione ambigua o dubbi):
+{{
+    "status": "conferma_richiesta",
+    "motivo": "Spiegazione dubbio",
+    "correzioni_applicate": [
+        {{"da": "originale", "a": "corretto", "tipo": "campo", "sicurezza": "70%"}}
+    ],
+    "eventi": [{{...evento con dati interpretati...}}],
+    "messaggio": "Non sono sicuro: 'X' → 'Y'?"
 }}
 
 SE DATA PASSATA ESPLICITA:
@@ -408,77 +444,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         messaggio_conferma += "   ❌ **'no'** o **'n'** per annullare"
         
         await update.message.reply_text(messaggio_conferma)
-        # TODO: Attendere risposta utente e creare evento solo se conferma
-        # Per ora procediamo automaticamente dopo aver mostrato la conferma
+        # STOP QUI: attendiamo conferma utente prima di creare evento
+        # TODO: Implementare gestione risposta "sì/no" utente
+        logger.info("Conferma richiesta per correzione, attendo risposta utente")
         return
     
-    # Gestisce eventi OK (compatibilità con formato vecchio e nuovo)
+    # Gestisce eventi OK SENZA correzioni (creazione diretta)
     if isinstance(parsed_data, dict) and parsed_data.get('status') == 'ok':
         eventi = parsed_data.get('eventi', [])
-        correzioni = parsed_data.get('correzioni_effettuate', [])
     elif isinstance(parsed_data, list):
         eventi = parsed_data
-        correzioni = []
     else:
         eventi = [parsed_data] if isinstance(parsed_data, dict) else []
-        correzioni = []
     
     if not eventi:
         await update.message.reply_text("⚠️ Nessun evento trovato nel messaggio.")
         return
     
-    # Prepara anteprima eventi CON correzioni
-    anteprima = []
-    
-    # Mostra correzioni se presenti
-    if correzioni:
-        anteprima.append("⚠️ **CORREZIONI AUTOMATICHE EFFETTUATE:**\n")
-        for corr in correzioni:
-            campo = corr.get('campo', '')
-            originale = corr.get('originale', '')
-            corretto = corr.get('corretto', '')
-            motivo = corr.get('motivo', '')
-            
-            if motivo:
-                anteprima.append(f"   • {campo.title()}: '{originale}' → '{corretto}' ({motivo})")
-            else:
-                anteprima.append(f"   • {campo.title()}: '{originale}' → '{corretto}'")
-        anteprima.append("\n")
-    
-    # Mostra anteprima eventi
-    anteprima.append("📋 **ANTEPRIMA EVENTI:**\n")
-    
-    for i, evento in enumerate(eventi, 1):
-        if not evento.get('data') or not evento.get('ora'):
-            continue
-        
-        nome_evento = f"🤖 {evento.get('nome_caso', 'Udienza')}"
-        
-        anteprima.append(f"**Evento {i}:**")
-        anteprima.append(f"   📋 Nome: {nome_evento}")
-        anteprima.append(f"   📍 Luogo: {evento.get('giudice', 'N/A')}")
-        anteprima.append(f"   📅 Data: {evento.get('data', 'N/A')}")
-        anteprima.append(f"   🕐 Ora: {evento.get('ora', 'N/A')}")
-        anteprima.append(f"   📁 RG: {evento.get('rg', 'N/A')}")
-        
-        tipo_ev = evento.get('tipo_evento')
-        if tipo_ev:
-            anteprima.append(f"   📝 Tipo: {tipo_ev}")
-        
-        anteprima.append("")
-    
-    messaggio_anteprima = "\n".join(anteprima)
-    
-    # Se ci sono correzioni, chiedi conferma
-    if correzioni:
-        messaggio_anteprima += "\n❓ **Confermi la creazione degli eventi con queste correzioni?**"
-        messaggio_anteprima += "\n💬 Rispondi 'sì' per confermare, 'no' per annullare"
-        
-        await update.message.reply_text(messaggio_anteprima)
-        # TODO: Implementare gestione risposta conferma
-        # Per ora procediamo comunque
-        
-    # Crea eventi su Google Calendar
+    # Crea eventi DIRETTAMENTE su Google Calendar (no correzioni, no conferma)
     risposte = []
     eventi_creati = 0
     
