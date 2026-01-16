@@ -1,6 +1,6 @@
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
@@ -8,6 +8,8 @@ import anthropic
 from dateutil import parser
 import pytz
 import json
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 # Configurazione logging
 logging.basicConfig(
@@ -20,9 +22,38 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
+GOOGLE_CALENDAR_ID = os.getenv('GOOGLE_CALENDAR_ID', 'primary')
 
 # Client Anthropic
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
+
+# Google Calendar scopes
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+
+def get_google_calendar_service():
+    """
+    Autentica con Service Account e restituisce il servizio Google Calendar
+    """
+    try:
+        if not GOOGLE_SERVICE_ACCOUNT_JSON:
+            logger.error("GOOGLE_SERVICE_ACCOUNT_JSON non configurato!")
+            return None
+        
+        # Carica credenziali Service Account da variabile d'ambiente
+        service_account_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+        credentials = service_account.Credentials.from_service_account_info(
+            service_account_info,
+            scopes=SCOPES
+        )
+        
+        service = build('calendar', 'v3', credentials=credentials)
+        logger.info("✅ Servizio Google Calendar inizializzato")
+        return service
+        
+    except Exception as e:
+        logger.error(f"Errore inizializzazione Google Calendar: {e}")
+        return None
 
 def parse_message_with_ai(message_text):
     """
@@ -112,27 +143,65 @@ def format_calendar_event(parsed_data):
         tz = pytz.timezone('Europe/Rome')
         dt = tz.localize(dt)
         
-        titolo = parsed_data.get('nome_caso', 'Udienza')
+        titolo = f"🤖 {parsed_data.get('nome_caso', 'Udienza')}"
         if parsed_data.get('rg'):
             titolo += f" - RG {parsed_data['rg']}"
-        
-        descrizione_parts = []
-        if parsed_data.get('giudice'):
-            descrizione_parts.append(f"Giudice: {parsed_data['giudice']}")
-        if parsed_data.get('note'):
-            descrizione_parts.append(f"Note: {parsed_data['note']}")
-        
-        descrizione = "\n".join(descrizione_parts)
         
         return {
             'title': titolo,
             'start_time': dt,
-            'description': descrizione,
+            'location': parsed_data.get('giudice', ''),
+            'description': parsed_data.get('messaggio_integrale', ''),
             'parsed_data': parsed_data
         }
         
     except Exception as e:
         logger.error(f"Errore formattazione evento: {e}")
+        return None
+
+def create_google_calendar_event(event_data):
+    """
+    Crea evento su Google Calendar
+    """
+    try:
+        service = get_google_calendar_service()
+        if not service:
+            logger.error("Servizio Google Calendar non disponibile")
+            return None
+        
+        # Prepara evento
+        start_dt = event_data['start_time']
+        end_dt = start_dt + timedelta(hours=1)  # Durata 1 ora
+        
+        event = {
+            'summary': event_data['title'],
+            'location': event_data.get('location', ''),
+            'description': event_data.get('description', ''),
+            'start': {
+                'dateTime': start_dt.isoformat(),
+                'timeZone': 'Europe/Rome',
+            },
+            'end': {
+                'dateTime': end_dt.isoformat(),
+                'timeZone': 'Europe/Rome',
+            },
+            'reminders': {
+                'useDefault': False,
+                'overrides': [],  # Nessun avviso
+            },
+        }
+        
+        # Crea evento
+        created_event = service.events().insert(
+            calendarId=GOOGLE_CALENDAR_ID,
+            body=event
+        ).execute()
+        
+        logger.info(f"Evento creato: {created_event.get('htmlLink')}")
+        return created_event
+        
+    except Exception as e:
+        logger.error(f"Errore creazione evento Google Calendar: {e}")
         return None
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -166,17 +235,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Nessun evento trovato nel messaggio.")
         return
     
-    # Prepara risposta per ogni evento
+    # Prepara risposta per ogni evento e crea su Google Calendar
     risposte = []
+    eventi_creati = 0
+    
     for i, evento in enumerate(eventi, 1):
         if not evento.get('data') or not evento.get('ora'):
             risposte.append(f"⚠️ Evento {i}: Dati incompleti (manca data o ora)")
             continue
         
-        # Aggiungi emoticon Claude al nome caso
-        nome_evento = f"🤖 {evento.get('nome_caso', 'Udienza')}"
+        # Formatta evento per calendario
+        event_data = format_calendar_event(evento)
+        if not event_data:
+            risposte.append(f"⚠️ Evento {i}: Errore formattazione")
+            continue
         
-        risposta = f"""✅ Evento {i}:
+        # Crea evento su Google Calendar
+        created = create_google_calendar_event(event_data)
+        
+        nome_evento = event_data['title']
+        
+        if created:
+            eventi_creati += 1
+            risposta = f"""✅ Evento {i} CREATO su Google Calendar:
+📋 Nome: {nome_evento}
+📍 Luogo: {evento.get('giudice', 'N/A')}
+📅 Data: {evento.get('data', 'N/A')}
+🕐 Ora: {evento.get('ora', 'N/A')}
+📁 RG: {evento.get('rg', 'N/A')}
+🔗 Link: {created.get('htmlLink', 'N/A')}"""
+        else:
+            risposta = f"""⚠️ Evento {i} NON creato (errore Calendar API):
 📋 Nome: {nome_evento}
 📍 Luogo: {evento.get('giudice', 'N/A')}
 📅 Data: {evento.get('data', 'N/A')}
@@ -186,11 +275,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         risposte.append(risposta)
     
     messaggio_finale = "\n\n".join(risposte)
-    messaggio_finale += "\n\n📝 Messaggio integrale salvato in note."
-    messaggio_finale += "\n✅ Pronto per Google Calendar (integration coming soon)"
+    messaggio_finale += f"\n\n📝 Messaggio integrale salvato in note."
+    messaggio_finale += f"\n✅ {eventi_creati}/{len(eventi)} eventi creati su Google Calendar"
     
     await update.message.reply_text(messaggio_finale)
-    logger.info(f"{len(eventi)} evento/i processato/i")
+    logger.info(f"{eventi_creati}/{len(eventi)} evento/i creato/i su Google Calendar")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
