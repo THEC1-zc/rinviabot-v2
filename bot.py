@@ -52,7 +52,7 @@ Rispondi SOLO con un oggetto JSON (senza markdown) con questi campi:
 Se un campo non è presente, usa null. La data e l'ora sono OBBLIGATORIE."""
 
         message = client.messages.create(
-            model="claude-haiku-20240307",
+            model="claude-3-5-haiku-20241022",
             max_tokens=500,
             messages=[
                 {"role": "user", "content": prompt}
