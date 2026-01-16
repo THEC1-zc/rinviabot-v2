@@ -33,23 +33,49 @@ def parse_message_with_ai(message_text):
         return None
         
     try:
-        prompt = f"""Analizza questo messaggio di un avvocato italiano riguardante un rinvio di udienza.
-Estrai le seguenti informazioni in formato JSON:
+        prompt = f"""Sei un assistente specializzato nell'analisi di messaggi di avvocati italiani riguardanti udienze penali.
 
-Messaggio:
+MESSAGGIO:
 {message_text}
 
-Rispondi SOLO con un oggetto JSON (senza markdown) con questi campi:
-{{
-    "nome_caso": "nome del caso o delle parti",
-    "rg": "numero RG se presente (formato: XXXX/YYYY)",
-    "data": "data udienza in formato DD/MM/YYYY",
-    "ora": "ora udienza in formato HH:MM",
-    "tribunale": "nome tribunale se presente",
-    "note": "altre informazioni rilevanti (tipo udienza, testi, ecc)"
-}}
+GIUDICI CONOSCIUTI (NON sono parti in causa):
+Carlomagno, Di Iorio, Farinella, Fuccio, Fuccio Sanza, Cardinali, Cirillo, Puliafito, Beccia, Mannara, De Santis, Sodani, Petrocelli, Ferrante, Collegio, Filocamo, Ferretti, Sorrentino, Barzellotti, Palmaccio, Vigorito, Vitelli, Nardone, Ragusa, Cerasoli, Roda, Ciabattari, GDP, Lombardi, Russo
+OPPURE città di tribunali (es: Tivoli, Milano, Roma)
 
-Se un campo non è presente, usa null. La data e l'ora sono OBBLIGATORIE."""
+AVVOCATI CONOSCIUTI (NON sono parti in causa):
+Burgada, Candeloro, Fortino, Sciullo, Puggioni, Messina, Bruni, Martellino, Di Giovanni
+Riconosci anche pattern "avv [Nome]" o "avvocato [Nome]"
+
+COMPITO:
+1. IDENTIFICA TUTTE LE DATE con orari nel messaggio
+2. Per OGNI data, crea un evento separato
+3. Le PARTI sono nomi che NON sono giudici/avvocati
+4. Se il messaggio è AMBIGUO o hai DUBBI, rispondi con: {{"chiarimento_richiesto": "spiega il dubbio"}}
+
+FORMATO OUTPUT:
+Se chiaro, rispondi con array JSON:
+[
+  {{
+    "nome_caso": "nome parte/imputato (NO giudici, NO avvocati)",
+    "rg": "numero RG se presente (es: '4264/2020 rgnr'). null se assente",
+    "data": "DD/MM/YYYY",
+    "ora": "HH:MM (converti 'h 10.30'→'10:30', 'ore 14'→'14:00')",
+    "giudice": "nome giudice dalla lista OPPURE città tribunale. null se assente",
+    "messaggio_integrale": "{message_text}"
+  }}
+]
+
+Se date multiple, crea ELEMENTO SEPARATO per ciascuna.
+Se dubbio/ambiguo, rispondi: {{"chiarimento_richiesto": "descrivi problema"}}
+
+ESEMPI:
+Input: "Serafini: 4264/2020 rgnr - Sodani - 20/09/2026 h 10.30 testi diffidati"
+Output: [{{"nome_caso": "Serafini", "rg": "4264/2020 rgnr", "data": "20/09/2026", "ora": "10:30", "giudice": "Sodani", "messaggio_integrale": "..."}}]
+
+Input: "Rossi: 15/3/26 h 10 predib, poi 20/4/26 h 11 discussione"
+Output: [{{"nome_caso": "Rossi", "data": "15/03/2026", "ora": "10:00", ...}}, {{"nome_caso": "Rossi", "data": "20/04/2026", "ora": "11:00", ...}}]
+
+Rispondi SOLO JSON, no markdown.
 
         message = client.messages.create(
             model="claude-3-haiku-20240307",
@@ -91,8 +117,8 @@ def format_calendar_event(parsed_data):
             titolo += f" - RG {parsed_data['rg']}"
         
         descrizione_parts = []
-        if parsed_data.get('tribunale'):
-            descrizione_parts.append(f"Tribunale: {parsed_data['tribunale']}")
+        if parsed_data.get('giudice'):
+            descrizione_parts.append(f"Giudice: {parsed_data['giudice']}")
         if parsed_data.get('note'):
             descrizione_parts.append(f"Note: {parsed_data['note']}")
         
@@ -128,25 +154,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Non sono riuscito a interpretare il messaggio.")
         return
     
-    event_data = format_calendar_event(parsed_data)
-    
-    if not event_data:
-        await update.message.reply_text("⚠️ Dati incompleti: manca data o ora.")
+    # Controlla se serve chiarimento
+    if isinstance(parsed_data, dict) and parsed_data.get('chiarimento_richiesto'):
+        await update.message.reply_text(f"❓ Ho bisogno di chiarimenti:\n\n{parsed_data['chiarimento_richiesto']}")
         return
     
-    conferma = f"""✅ Messaggio interpretato:
-
-📋 Caso: {parsed_data.get('nome_caso', 'N/A')}
-📁 RG: {parsed_data.get('rg', 'N/A')}
-📅 Data: {parsed_data.get('data', 'N/A')}
-🕐 Ora: {parsed_data.get('ora', 'N/A')}
-🏛️ Tribunale: {parsed_data.get('tribunale', 'N/A')}
-📝 Note: {parsed_data.get('note', 'N/A')}
-
-✅ Evento pronto (Google Calendar integration coming soon)"""
+    # Gestisce array di eventi (supporta date multiple)
+    eventi = parsed_data if isinstance(parsed_data, list) else [parsed_data]
     
-    await update.message.reply_text(conferma)
-    logger.info(f"Evento processato: {event_data['title']}")
+    if not eventi:
+        await update.message.reply_text("⚠️ Nessun evento trovato nel messaggio.")
+        return
+    
+    # Prepara risposta per ogni evento
+    risposte = []
+    for i, evento in enumerate(eventi, 1):
+        if not evento.get('data') or not evento.get('ora'):
+            risposte.append(f"⚠️ Evento {i}: Dati incompleti (manca data o ora)")
+            continue
+        
+        # Aggiungi emoticon Claude al nome caso
+        nome_evento = f"🤖 {evento.get('nome_caso', 'Udienza')}"
+        
+        risposta = f"""✅ Evento {i}:
+📋 Nome: {nome_evento}
+📍 Luogo: {evento.get('giudice', 'N/A')}
+📅 Data: {evento.get('data', 'N/A')}
+🕐 Ora: {evento.get('ora', 'N/A')}
+📁 RG: {evento.get('rg', 'N/A')}"""
+        
+        risposte.append(risposta)
+    
+    messaggio_finale = "\n\n".join(risposte)
+    messaggio_finale += "\n\n📝 Messaggio integrale salvato in note."
+    messaggio_finale += "\n✅ Pronto per Google Calendar (integration coming soon)"
+    
+    await update.message.reply_text(messaggio_finale)
+    logger.info(f"{len(eventi)} evento/i processato/i")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
