@@ -177,9 +177,15 @@ Errori evidenti con 1-2 lettere di differenza:
 - "Petrucelli" → "Petrocelli" (U invece di O)
 - "Vigoritto" → "Vigorito" (T doppia)
 
+**GIUDICE NON RICONOSCIUTO:**
+Se il giudice NON è in lista e NON è simile a nessuno:
+- USA "Monocratico Civitavecchia" come default
+- Chiedi conferma con "Va bene così?"
+- Esempio: "Bortolini" (non in lista) → giudice: "Monocratico Civitavecchia", chiedi conferma
+
 **RICHIEDI CONFERMA (sicurezza <90%):**
 Quando il nome è ambiguo o non riconosciuto:
-- Nome non in lista e non simile a nessuno
+- Nome non in lista → usa "Monocratico Civitavecchia" e chiedi conferma
 - Più giudici possibili con stessa similarità
 - Nome troppo diverso da tutti (>3 lettere differenza)
 
@@ -355,10 +361,10 @@ Input: "Müller Bortolini 20/03 h 9"
 Output:
 {{
     "status": "conferma_richiesta",
-    "dubbi": [{{"campo": "giudice", "valore_letto": "Bortolini", "interpretazione": "Non in lista giudici", "domanda": "Giudice 'Bortolini' non riconosciuto. È corretto?"}}],
+    "dubbi": [{{"campo": "giudice", "valore_letto": "Bortolini", "interpretazione": "Non in lista giudici, uso default", "domanda": "Giudice 'Bortolini' non riconosciuto. Uso 'Monocratico Civitavecchia'. Va bene?"}}],
     "eventi": [{{
         "nome_caso": "Müller",
-        "giudice": "Bortolini (da confermare)",
+        "giudice": "Monocratico Civitavecchia",
         ...
     }}],
     "messaggio": "Ho dei dubbi, va bene così?"
@@ -633,14 +639,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     risposte = []
     eventi_creati = 0
     
-    # Se ci sono correzioni automatiche, mostralle
+    # Se ci sono correzioni automatiche, mostralle in modo chiaro
     if correzioni_auto:
-        msg_correzioni = "🔧 **Correzioni automatiche:**\n"
+        msg_correzioni = "🔧 **Correzioni automatiche applicate:**\n"
         for corr in correzioni_auto:
             campo = corr.get('campo', '')
             da = corr.get('da', '')
             a = corr.get('a', '')
-            msg_correzioni += f"   • {campo}: '{da}' → '{a}'\n"
+            sicurezza = corr.get('sicurezza', '')
+            emoji_campo = {
+                'giudice': '⚖️',
+                'data': '📅',
+                'ora': '🕐',
+                'rg': '📁',
+                'nome': '👤'
+            }.get(campo, '📝')
+            msg_correzioni += f"   {emoji_campo} {campo}: '{da}' → **'{a}'**"
+            if sicurezza:
+                msg_correzioni += f" ({sicurezza})"
+            msg_correzioni += "\n"
         risposte.append(msg_correzioni)
     
     for i, evento in enumerate(eventi, 1):
