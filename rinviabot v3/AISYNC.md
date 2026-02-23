@@ -20,11 +20,20 @@ Shared sync log for all AI agents working on WORKDB and RinviaBot v3.
 
 ## Current build
 
-- Build: `0.2.0`
+- Build: `0.3.1`
 - Updated at: `2026-02-23`
 - Updated by: `Codex`
 
 ## Changelog (newest first)
+
+### 0.3.1 - 2026-02-23 - Codex
+- Stabilized notifications subsystem to avoid app outage when notification tables are unavailable/unready at runtime.
+- Added defensive fallback in notification create/fetch helpers (non-fatal errors, empty-state fallback).
+- Goal: keep WORKDB online and renderable while DB schema catches up.
+- Files:
+  - /Users/fabio/workspace/WORKDB/WORKDB/app.py
+  - /Users/fabio/workspace/WORKDB/WORKDB/AISYNC.md
+  - /Users/fabio/Documents/New project/rinviabot v3/AISYNC.md
 
 ### 0.2.0 - 2026-02-23 - Codex
 - Added autonomous Claude integration directly in WORKDB (`/api/ai/compile`).
