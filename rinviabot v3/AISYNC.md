@@ -20,11 +20,22 @@ Shared sync log for all AI agents working on WORKDB and RinviaBot v3.
 
 ## Current build
 
-- Build: `0.4.8`
+- Build: `0.4.9`
 - Updated at: `2026-02-24`
 - Updated by: `Codex`
 
 ## Changelog (newest first)
+
+### 0.4.9 - 2026-02-24 - Codex
+- Import fix: sanitized date placeholders (`NaT`, `definito`, `rinuncia`, `null`) before DB insert.
+- Date cleaning rule now returns only valid dates or `None` (never raw text for DATE columns).
+- Added admin action to deduplicate clienti by name and re-link pratiche (`POST /admin/clienti/dedupe`).
+- Added UI button `Deduplica Clienti` in clienti page.
+- Files:
+  - /Users/fabio/workspace/WORKDB/WORKDB/app.py
+  - /Users/fabio/workspace/WORKDB/WORKDB/templates/clienti.html
+  - /Users/fabio/workspace/WORKDB/WORKDB/AISYNC.md
+  - /Users/fabio/Documents/New project/rinviabot v3/AISYNC.md
 
 ### 0.4.8 - 2026-02-24 - Codex
 - Added global `AI Check` action to scan pratiche/clienti and create in-app notifications for missing essential data.
