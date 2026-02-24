@@ -20,11 +20,20 @@ Shared sync log for all AI agents working on WORKDB and RinviaBot v3.
 
 ## Current build
 
-- Build: `0.4.3`
+- Build: `0.4.4`
 - Updated at: `2026-02-24`
 - Updated by: `Codex`
 
 ## Changelog (newest first)
+
+### 0.4.4 - 2026-02-24 - Codex
+- Reintroduced Telegram webhook endpoint in WORKDB (`POST /api/telegram/webhook`) to fix 404 on Telegram delivery.
+- Added webhook secret validation (`X-Telegram-Bot-Api-Secret-Token`) and update deduplication by `update_id`.
+- Added durable storage table `telegram_messages` and mirror of inbound text into internal chat timeline.
+- Files:
+  - /Users/fabio/workspace/WORKDB/WORKDB/app.py
+  - /Users/fabio/workspace/WORKDB/WORKDB/AISYNC.md
+  - /Users/fabio/Documents/New project/rinviabot v3/AISYNC.md
 
 ### 0.4.3 - 2026-02-24 - Codex
 - Chat UX fix: conferma visiva su invio messaggio (`flash success`) e auto-scroll timeline.
