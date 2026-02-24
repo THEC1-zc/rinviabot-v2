@@ -20,11 +20,23 @@ Shared sync log for all AI agents working on WORKDB and RinviaBot v3.
 
 ## Current build
 
-- Build: `0.4.5`
+- Build: `0.4.6`
 - Updated at: `2026-02-24`
 - Updated by: `Codex`
 
 ## Changelog (newest first)
+
+### 0.4.6 - 2026-02-24 - Codex
+- Import stabilizzato: AI assist reso opzionale (default OFF) per evitare timeout su import pesanti.
+- Dashboard import aggiornata con checkbox `Assist AI (piu lento)`.
+- Start command Render aggiornato con timeout gunicorn esteso (`--timeout 300`).
+- Fix conteggi finali import compatibili con PostgreSQL/RealDictCursor.
+- Files:
+  - /Users/fabio/workspace/WORKDB/WORKDB/app.py
+  - /Users/fabio/workspace/WORKDB/WORKDB/templates/dashboard.html
+  - /Users/fabio/workspace/WORKDB/WORKDB/render.yaml
+  - /Users/fabio/workspace/WORKDB/WORKDB/AISYNC.md
+  - /Users/fabio/Documents/New project/rinviabot v3/AISYNC.md
 
 ### 0.4.5 - 2026-02-24 - Codex
 - Added persistent DB administration endpoints: `POST /admin/db/init` and `GET /admin/db/status`.
