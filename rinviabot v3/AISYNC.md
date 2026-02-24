@@ -20,11 +20,20 @@ Shared sync log for all AI agents working on WORKDB and RinviaBot v3.
 
 ## Current build
 
-- Build: `0.3.3`
-- Updated at: `2026-02-23`
+- Build: `0.4.3`
+- Updated at: `2026-02-24`
 - Updated by: `Codex`
 
 ## Changelog (newest first)
+
+### 0.4.3 - 2026-02-24 - Codex
+- Chat UX fix: conferma visiva su invio messaggio (`flash success`) e auto-scroll timeline.
+- Nessuna modifica al flusso dati; migliorata solo evidenza utente dopo submit.
+- Files:
+  - /Users/fabio/workspace/WORKDB/WORKDB/app.py
+  - /Users/fabio/workspace/WORKDB/WORKDB/templates/chat.html
+  - /Users/fabio/workspace/WORKDB/WORKDB/AISYNC.md
+  - /Users/fabio/Documents/New project/rinviabot v3/AISYNC.md
 
 ### 0.3.3 - 2026-02-23 - Codex
 - Step 4 Telegram integration: added outbound send support from WORKDB to Telegram.
