@@ -20,11 +20,25 @@ Shared sync log for all AI agents working on WORKDB and RinviaBot v3.
 
 ## Current build
 
-- Build: `0.4.7`
+- Build: `0.4.8`
 - Updated at: `2026-02-24`
 - Updated by: `Codex`
 
 ## Changelog (newest first)
+
+### 0.4.8 - 2026-02-24 - Codex
+- Added global `AI Check` action to scan pratiche/clienti and create in-app notifications for missing essential data.
+- Added notification de-duplication (`create_notification_once`) to avoid repeated identical alerts.
+- Added chat-driven udienza update: internal chat messages can update `pratiche.udienza` (and `ore`) when pattern includes pratica/rg + date.
+- Added fallback notification when chat detects rinvio but no matching pratica is found.
+- Added archivia action in pratica edit form and AI-check buttons in dashboard/clienti pages.
+- Files:
+  - /Users/fabio/workspace/WORKDB/WORKDB/app.py
+  - /Users/fabio/workspace/WORKDB/WORKDB/templates/dashboard.html
+  - /Users/fabio/workspace/WORKDB/WORKDB/templates/clienti.html
+  - /Users/fabio/workspace/WORKDB/WORKDB/templates/pratica_form.html
+  - /Users/fabio/workspace/WORKDB/WORKDB/AISYNC.md
+  - /Users/fabio/Documents/New project/rinviabot v3/AISYNC.md
 
 ### 0.4.7 - 2026-02-24 - Codex
 - Fixed Excel import consistency: per-row `SAVEPOINT` to prevent full transaction rollback on single-row errors.
