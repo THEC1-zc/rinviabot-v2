@@ -20,11 +20,20 @@ Shared sync log for all AI agents working on WORKDB and RinviaBot v3.
 
 ## Current build
 
-- Build: `0.4.4`
+- Build: `0.4.5`
 - Updated at: `2026-02-24`
 - Updated by: `Codex`
 
 ## Changelog (newest first)
+
+### 0.4.5 - 2026-02-24 - Codex
+- Added persistent DB administration endpoints: `POST /admin/db/init` and `GET /admin/db/status`.
+- Added `ensure_runtime_tables()` to force runtime schema init for core tables (pratiche/chat/telegram/notifications).
+- Goal: enable explicit DB initialization and verification on Render PostgreSQL.
+- Files:
+  - /Users/fabio/workspace/WORKDB/WORKDB/app.py
+  - /Users/fabio/workspace/WORKDB/WORKDB/AISYNC.md
+  - /Users/fabio/Documents/New project/rinviabot v3/AISYNC.md
 
 ### 0.4.4 - 2026-02-24 - Codex
 - Reintroduced Telegram webhook endpoint in WORKDB (`POST /api/telegram/webhook`) to fix 404 on Telegram delivery.
