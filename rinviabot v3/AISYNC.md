@@ -20,11 +20,22 @@ Shared sync log for all AI agents working on WORKDB and RinviaBot v3.
 
 ## Current build
 
-- Build: `0.4.9`
+- Build: `0.4.10`
 - Updated at: `2026-02-24`
 - Updated by: `Codex`
 
 ## Changelog (newest first)
+
+### 0.4.10 - 2026-02-24 - Codex
+- Fixed 500 on `/pratiche` with PostgreSQL date objects by introducing Jinja filter `date10`.
+- Updated templates to render date safely for both string and date/datetime values.
+- Files:
+  - /Users/fabio/workspace/WORKDB/WORKDB/app.py
+  - /Users/fabio/workspace/WORKDB/WORKDB/templates/pratiche.html
+  - /Users/fabio/workspace/WORKDB/WORKDB/templates/dashboard.html
+  - /Users/fabio/workspace/WORKDB/WORKDB/templates/pratica_form.html
+  - /Users/fabio/workspace/WORKDB/WORKDB/AISYNC.md
+  - /Users/fabio/Documents/New project/rinviabot v3/AISYNC.md
 
 ### 0.4.9 - 2026-02-24 - Codex
 - Import fix: sanitized date placeholders (`NaT`, `definito`, `rinuncia`, `null`) before DB insert.
