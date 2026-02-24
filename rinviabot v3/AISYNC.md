@@ -20,11 +20,20 @@ Shared sync log for all AI agents working on WORKDB and RinviaBot v3.
 
 ## Current build
 
-- Build: `0.4.6`
+- Build: `0.4.7`
 - Updated at: `2026-02-24`
 - Updated by: `Codex`
 
 ## Changelog (newest first)
+
+### 0.4.7 - 2026-02-24 - Codex
+- Fixed Excel import consistency: per-row `SAVEPOINT` to prevent full transaction rollback on single-row errors.
+- Added duplicate guards for `clienti` (by nome normalized) and `pratiche` (by prat_n+archiviata).
+- Goal: avoid doubled clienti and ensure pratiche persist correctly during bulk import.
+- Files:
+  - /Users/fabio/workspace/WORKDB/WORKDB/app.py
+  - /Users/fabio/workspace/WORKDB/WORKDB/AISYNC.md
+  - /Users/fabio/Documents/New project/rinviabot v3/AISYNC.md
 
 ### 0.4.6 - 2026-02-24 - Codex
 - Import stabilizzato: AI assist reso opzionale (default OFF) per evitare timeout su import pesanti.
