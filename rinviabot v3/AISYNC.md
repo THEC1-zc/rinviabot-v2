@@ -20,11 +20,23 @@ Shared sync log for all AI agents working on WORKDB and RinviaBot v3.
 
 ## Current build
 
-- Build: `0.4.10`
+- Build: `0.4.11`
 - Updated at: `2026-02-24`
 - Updated by: `Codex`
 
 ## Changelog (newest first)
+
+### 0.4.11 - 2026-02-24 - Codex
+- Added new admin page `Import Chat TXT` to process RinviaBot export chat text files.
+- Upload flow updates only future udienza dates and supports dry-run mode.
+- If pratica matching fails, creates notification for manual anchoring; handles ambiguous matches too.
+- Added sidebar navigation link for quick access to the new page.
+- Files:
+  - /Users/fabio/workspace/WORKDB/WORKDB/app.py
+  - /Users/fabio/workspace/WORKDB/WORKDB/templates/base.html
+  - /Users/fabio/workspace/WORKDB/WORKDB/templates/chat_import.html
+  - /Users/fabio/workspace/WORKDB/WORKDB/AISYNC.md
+  - /Users/fabio/Documents/New project/rinviabot v3/AISYNC.md
 
 ### 0.4.10 - 2026-02-24 - Codex
 - Fixed 500 on `/pratiche` with PostgreSQL date objects by introducing Jinja filter `date10`.
