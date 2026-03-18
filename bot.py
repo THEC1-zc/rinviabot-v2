@@ -2,6 +2,7 @@ import os
 import logging
 from datetime import datetime, timedelta
 import re
+from typing import Any, Optional
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import anthropic
@@ -30,6 +31,355 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY els
 
 # Google Calendar scopes
 SCOPES = ['https://www.googleapis.com/auth/calendar']
+ROME_TZ = pytz.timezone('Europe/Rome')
+
+KNOWN_JUDGES = {
+    'carlomagno': 'Carlomagno',
+    'di iorio': 'Di Iorio',
+    'farinella': 'Farinella',
+    'fuccio': 'Fuccio',
+    'fuccio sanza': 'Fuccio Sanza',
+    'cardinali': 'Cardinali',
+    'cirillo': 'Cirillo',
+    'puliafito': 'Puliafito',
+    'beccia': 'Beccia',
+    'mannara': 'Mannara',
+    'de santis': 'De Santis',
+    'sodani': 'Sodani',
+    'petrocelli': 'Petrocelli',
+    'ferrante': 'Ferrante',
+    'filocamo': 'Filocamo',
+    'ferretti': 'Ferretti',
+    'sorrentino': 'Sorrentino',
+    'barzellotti': 'Barzellotti',
+    'palmaccio': 'Palmaccio',
+    'vigorito': 'Vigorito',
+    'vitelli': 'Vitelli',
+    'nardone': 'Nardone',
+    'ragusa': 'Ragusa',
+    'cerasoli': 'Cerasoli',
+    'roda': 'Roda',
+    'ciabattari': 'Ciabattari',
+    'lombardi': 'Lombardi',
+    'russo': 'Russo',
+    'maellaro': 'Maellaro',
+    'nappi': 'Nappi',
+    'petti': 'Petti',
+    'coniglio': 'Coniglio',
+    'croci': 'Croci',
+    'bocola': 'Bocola',
+    'ciampelli': 'Ciampelli',
+    'arcieri': 'Arcieri',
+    'karpinska': 'Karpinska',
+    'gdp': 'GDP',
+    'gup': 'GUP',
+    'gip': 'GIP',
+    'got': 'GOT',
+    'collegio': 'Collegio',
+    'collegio a': 'Collegio A',
+    'collegio b': 'Collegio B',
+    'collegio c': 'Collegio C',
+    "corte d'appello": "Corte d'Appello",
+}
+
+JUDGE_TYPO_MAP = {
+    'farinela': 'Farinella',
+    'sodanoi': 'Sodani',
+    'fuccuo': 'Fuccio',
+    'petrucelli': 'Petrocelli',
+    'di ioro': 'Di Iorio',
+    'puliafitto': 'Puliafito',
+    'maelaro': 'Maellaro',
+}
+
+NON_HEARING_KEYWORDS = {
+    'sentenza', 'condanna', 'assolto', 'assolta', 'assoluzione', 'prescritto',
+    'prescrizione', '530', '131bis', 'n.d.p.', 'ndp', 'pena', 'mesi', 'anni',
+    'riserva', 'riservato', 'riservata', 'trattenuta', 'trattenuto'
+}
+
+HEARING_HINTS = {
+    'rinvio', 'udienza', 'esame', 'testi', 'discussione', 'impedimento',
+    'predib', 'dibattimento', 'stessi incombenti', 'incombenti', 'h ', 'ore ',
+    'alle ', 'al ', 'del '
+}
+LOW_CONFIDENCE_THRESHOLD = 0.72
+
+
+def normalize_whitespace(value: str) -> str:
+    return re.sub(r'\s+', ' ', value or '').strip()
+
+
+def normalize_message_text(message_text: str) -> str:
+    text = message_text or ''
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    text = re.sub(r'[—–]{3,}', '\n----\n', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    def fix_numeric_token(match: re.Match[str]) -> str:
+        token = match.group(0)
+        return (token
+            .replace('O', '0')
+            .replace('o', '0')
+            .replace('I', '1')
+            .replace('l', '1')
+            .replace('S', '5')
+            .replace('B', '8'))
+
+    text = re.sub(r'(?<!\w)[0-9OlISB][0-9OlISB\s/.,:-]*[0-9OlISB](?!\w)', fix_numeric_token, text)
+    return text.strip()
+
+
+def split_message_blocks(message_text: str) -> list[str]:
+    normalized = normalize_message_text(message_text)
+    parts = re.split(r'\n\s*----\s*\n|\n{2,}', normalized)
+    return [normalize_whitespace(part) for part in parts if normalize_whitespace(part)]
+
+
+def extract_dates_from_text(message_text: str) -> list[str]:
+    return re.findall(r'\b\d{1,2}[\/.\-]\d{1,2}(?:[\/.\-]\d{2,4})?\b', message_text or '')
+
+
+def extract_times_from_text(message_text: str) -> list[str]:
+    return re.findall(r'(?:\bh\s*|\bore\s*|\balle\s*)?\d{1,2}(?::|[.,])\d{2}|\b(?:h\s*|ore\s*|alle\s*)\d{1,2}\b', message_text or '', flags=re.IGNORECASE)
+
+
+def build_message_analysis(message_text: str) -> dict[str, Any]:
+    normalized = normalize_message_text(message_text)
+    blocks = split_message_blocks(message_text)
+    lowered = normalized.lower()
+    dates = extract_dates_from_text(normalized)
+    times = extract_times_from_text(normalized)
+
+    return {
+        'normalized_message': normalized,
+        'message_blocks': blocks,
+        'block_count': len(blocks),
+        'date_candidates': dates,
+        'time_candidates': times,
+        'has_multiple_dates': len(set(dates)) > 1,
+        'has_non_hearing_keywords': [kw for kw in NON_HEARING_KEYWORDS if kw in lowered],
+        'has_hearing_hints': [kw for kw in HEARING_HINTS if kw in lowered],
+        'first_token': normalize_whitespace(re.split(r'[:\n, ]', normalized, maxsplit=1)[0]) if normalized else '',
+    }
+
+
+def extract_json_object(raw_text: str) -> Optional[dict[str, Any]]:
+    cleaned = (raw_text or '').strip()
+    cleaned = cleaned.replace('```json', '').replace('```', '').strip()
+
+    try:
+        data = json.loads(cleaned)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        pass
+
+    start = cleaned.find('{')
+    end = cleaned.rfind('}')
+    if start == -1 or end == -1 or end <= start:
+        return None
+
+    try:
+        data = json.loads(cleaned[start:end + 1])
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def normalize_judge_name(value: str) -> str:
+    raw = normalize_whitespace(value)
+    if not raw:
+        return 'Tribunale Civitavecchia'
+
+    lowered = raw.lower()
+    if lowered in JUDGE_TYPO_MAP:
+        return JUDGE_TYPO_MAP[lowered]
+    if lowered in KNOWN_JUDGES:
+        return KNOWN_JUDGES[lowered]
+
+    compact = re.sub(r'\s+', ' ', lowered)
+    if compact in JUDGE_TYPO_MAP:
+        return JUDGE_TYPO_MAP[compact]
+    if compact in KNOWN_JUDGES:
+        return KNOWN_JUDGES[compact]
+
+    return raw
+
+
+def normalize_event_date(date_value: str) -> Optional[str]:
+    raw = normalize_whitespace(date_value)
+    if not raw:
+        return None
+
+    try:
+        dt = parser.parse(raw, dayfirst=True, default=datetime.now(ROME_TZ).replace(hour=9, minute=0, second=0, microsecond=0))
+        if dt.year < 100:
+            dt = dt.replace(year=2000 + dt.year)
+        return dt.strftime('%d/%m/%Y')
+    except Exception:
+        return None
+
+
+def normalize_event_time(time_value: str) -> Optional[str]:
+    raw = normalize_whitespace(time_value)
+    if not raw:
+        return '09:00'
+
+    try:
+        dt = parser.parse(raw, default=datetime.now(ROME_TZ).replace(hour=9, minute=0, second=0, microsecond=0))
+        return dt.strftime('%H:%M')
+    except Exception:
+        return None
+
+
+def infer_tipo_from_text(message_text: str) -> str:
+    lowered = (message_text or '').lower()
+    if any(keyword in lowered for keyword in ('riserva', 'riservato', 'riservata')):
+        return 'riserva'
+    if any(keyword in lowered for keyword in ('trattenuta', 'trattenuto')):
+        return 'trattenuta'
+    if any(keyword in lowered for keyword in ('condanna', 'assolto', 'assolta', 'assoluzione', '530', 'prescritto', '131bis', 'ndp', 'n.d.p.')):
+        return 'sentenza'
+    if re.search(r'\b\d{1,2}[\/.\-]\d{1,2}(?:[\/.\-]\d{2,4})?\b', lowered) and any(hint in lowered for hint in HEARING_HINTS):
+        return 'rinvio'
+    if any(hint in lowered for hint in HEARING_HINTS):
+        return 'rinvio'
+    return 'nota'
+
+
+def validate_and_normalize_parsed_data(parsed_data: dict[str, Any], original_message: str) -> dict[str, Any]:
+    tipo = str(parsed_data.get('tipo', '')).strip().lower()
+    if tipo not in {'rinvio', 'sentenza', 'riserva', 'trattenuta', 'nota', 'conferma', 'data_passata'}:
+        tipo = infer_tipo_from_text(original_message)
+
+    normalized: dict[str, Any] = {'tipo': tipo}
+
+    if tipo in {'sentenza', 'riserva', 'trattenuta', 'nota'}:
+        default_messages = {
+            'sentenza': '📋 È una sentenza',
+            'riserva': '⏸️ È una riserva',
+            'trattenuta': '⚖️ È una trattenuta',
+            'nota': '📝 È una nota procedurale',
+        }
+        normalized['messaggio'] = parsed_data.get('messaggio') or default_messages[tipo]
+        return normalized
+
+    if tipo == 'conferma':
+        normalized['dubbio'] = normalize_whitespace(str(parsed_data.get('dubbio', '')))
+        normalized['interpretazione'] = parsed_data.get('interpretazione', {}) if isinstance(parsed_data.get('interpretazione'), dict) else {}
+        normalized['domanda'] = normalize_whitespace(str(parsed_data.get('domanda', 'Va bene così?')))
+        return normalized
+
+    if tipo == 'data_passata':
+        opzioni = parsed_data.get('opzioni', [])
+        normalized['data_letta'] = normalize_whitespace(str(parsed_data.get('data_letta', '')))
+        normalized['opzioni'] = opzioni if isinstance(opzioni, list) else []
+        normalized['domanda'] = normalize_whitespace(str(parsed_data.get('domanda', 'La data è nel passato. Quale intendevi?')))
+        return normalized
+
+    eventi_raw = parsed_data.get('eventi', [])
+    if isinstance(eventi_raw, dict):
+        eventi_raw = [eventi_raw]
+    if not isinstance(eventi_raw, list):
+        eventi_raw = []
+
+    correzioni = parsed_data.get('correzioni', [])
+    warnings = parsed_data.get('warnings', [])
+    confidence = parsed_data.get('confidence')
+
+    eventi = []
+    for evento in eventi_raw:
+        if not isinstance(evento, dict):
+            continue
+
+        parte = normalize_whitespace(str(evento.get('parte', '')))
+        giudice = normalize_judge_name(str(evento.get('giudice', '') or 'Tribunale Civitavecchia'))
+        data = normalize_event_date(str(evento.get('data', '')))
+        ora = normalize_event_time(str(evento.get('ora', '')))
+        note = normalize_whitespace(str(evento.get('note', '') or original_message))
+
+        if not parte and note:
+            maybe_parte = re.split(r'[:\n,]', note, maxsplit=1)[0].strip()
+            parte = normalize_whitespace(maybe_parte)
+
+        if not parte or not data or not ora:
+            continue
+
+        eventi.append({
+            'parte': parte,
+            'giudice': giudice,
+            'data': data,
+            'ora': ora,
+            'note': note,
+        })
+
+    if not eventi:
+        fallback_tipo = infer_tipo_from_text(original_message)
+        if fallback_tipo != 'rinvio':
+            return validate_and_normalize_parsed_data({'tipo': fallback_tipo}, original_message)
+
+        return {
+            'tipo': 'conferma',
+            'dubbio': 'Ho capito che probabilmente si tratta di un rinvio, ma non sono riuscito a ricostruire tutti i dati con sufficiente affidabilità.',
+            'interpretazione': {},
+            'domanda': 'Puoi riscriverlo indicando almeno parte, data e ora?'
+        }
+
+    normalized['eventi'] = eventi
+    normalized['correzioni'] = correzioni if isinstance(correzioni, list) else []
+    normalized['warnings'] = warnings if isinstance(warnings, list) else []
+    if isinstance(confidence, (int, float)):
+        normalized['confidence'] = float(confidence)
+    return normalized
+
+
+def should_require_confirmation(parsed_data: dict[str, Any], analysis: dict[str, Any]) -> Optional[str]:
+    if parsed_data.get('tipo') != 'rinvio':
+        return None
+
+    confidence = parsed_data.get('confidence')
+    warnings = parsed_data.get('warnings', [])
+    eventi = parsed_data.get('eventi', [])
+
+    if isinstance(confidence, (int, float)) and confidence < LOW_CONFIDENCE_THRESHOLD:
+        return f"Confidenza troppo bassa ({confidence:.2f}) per creare l'evento in automatico."
+
+    if isinstance(warnings, list) and warnings:
+        return "Ho alcuni punti di incertezza che è meglio confermare prima della creazione."
+
+    if analysis.get('block_count', 0) > 1 and len(eventi) != analysis.get('block_count'):
+        return "Il messaggio sembra contenere più blocchi o più rinvii, ma non sono riuscito a separarli con sufficiente affidabilità."
+
+    for evento in eventi:
+        parte = normalize_whitespace(str(evento.get('parte', '')))
+        giudice = normalize_whitespace(str(evento.get('giudice', '')))
+        if len(parte) < 2:
+            return "Non sono sicuro di aver identificato correttamente la parte."
+        if re.search(r'\bavv\.?\b', giudice.lower()):
+            return "Il nome del giudice sembra in realtà un avvocato o un riferimento difensivo."
+
+    return None
+
+
+def build_confirmation_from_events(parsed_data: dict[str, Any], reason: str) -> dict[str, Any]:
+    first_event = {}
+    eventi = parsed_data.get('eventi', [])
+    if isinstance(eventi, list) and eventi:
+        first = eventi[0]
+        if isinstance(first, dict):
+            first_event = first
+
+    return {
+        'tipo': 'conferma',
+        'dubbio': reason,
+        'interpretazione': {
+            'parte': first_event.get('parte', ''),
+            'giudice': first_event.get('giudice', ''),
+            'data': first_event.get('data', ''),
+            'ora': first_event.get('ora', ''),
+        },
+        'domanda': 'Confermi questa lettura prima che crei l’evento?'
+    }
 
 def get_google_calendar_service():
     """Autentica con Service Account e restituisce il servizio Google Calendar"""
@@ -53,291 +403,94 @@ def get_google_calendar_service():
         return None
 
 def parse_message_with_ai(message_text):
-    """Usa Claude per interpretare il messaggio con AI intraprendente"""
+    """Usa Claude per interpretare il messaggio mantenendo lettura completa e validazione finale."""
     if not client:
         logger.error("Client Anthropic non configurato")
         return None
-        
+
     try:
-        prompt = f"""Sei l'assistente AI di Fabio, un avvocato penalista italiano. Fabio ti manda appunti veloci presi durante le udienze. Devi interpretarli ATTIVAMENTE e AUTONOMAMENTE.
+        analysis = build_message_analysis(message_text)
+        normalized_message = analysis['normalized_message']
+        today = datetime.now(ROME_TZ)
+        prompt = f"""Sei il lettore intelligente dei messaggi di Fabio, avvocato penalista italiano.
 
-DATA ODIERNA: {datetime.now(pytz.timezone('Europe/Rome')).strftime('%d/%m/%Y %A')}
-ANNO CORRENTE: {datetime.now(pytz.timezone('Europe/Rome')).year}
+Leggi il messaggio in modo completo e naturale: non applicare regole meccaniche se il senso complessivo suggerisce una lettura migliore.
+Le istruzioni servono come aiuto, non devono impedirti di capire davvero il testo.
 
-═══════════════════════════════════════════════════════════════
-🧠 PRIMA DI TUTTO: CHE TIPO DI MESSAGGIO È?
-═══════════════════════════════════════════════════════════════
+Data corrente: {today.strftime('%d/%m/%Y')}
+Anno corrente: {today.year}
 
-**RINVIO** (crea evento calendario):
-- Contiene una DATA FUTURA
-- Parole chiave: "rinvio al", "udienza del", "al [data]", "h [ora]", "ore [ora]"
-- Esempio: "Rossi Sodani rinvio al 15/3/26 h 10"
+Obiettivo:
+1. Capire se il messaggio parla di un rinvio/udienza futura oppure di altro.
+2. Se è un rinvio, estrarre uno o più eventi con la migliore interpretazione possibile.
+3. Correggere typo evidenti di date, ore e nomi dei giudici.
+4. Conservare i cognomi delle parti il più possibile come scritti.
+5. Chiedere conferma solo quando il rischio di creare un evento sbagliato è concreto.
 
-**SENTENZA** (NO evento, rispondi "È una sentenza"):
-- Parole: "condanna", "assolto", "530", "assoluzione", "prescritto", "ndp", "131bis"
-- Contiene pena: "mesi X", "anni X", "€ XXX"
-- Esempio: "Bianchi: 530 assolto! Giorni 90"
+Linee guida:
+- Considera tutto il messaggio prima di decidere.
+- "avv", "avv." e difensori nominati non sono il giudice.
+- Il giudice può essere noto oppure dedotto dal contesto; se manca davvero usa "Tribunale Civitavecchia".
+- Se ci sono separatori come "----" oppure più date chiaramente distinte, estrai più eventi.
+- Se una data manca dell'anno, inferiscilo in modo sensato.
+- Se un anno esplicito porta nel passato e sembra sospetto, usa "data_passata".
+- Se il messaggio sembra una sentenza, riserva, trattenuta o nota procedurale, non inventare eventi.
+- Se hai dubbi reali, usa "conferma" invece di forzare un evento.
+- Usa anche l'analisi tecnica qui sotto come indizio, ma se il significato complessivo del messaggio suggerisce qualcosa di meglio, segui il significato.
 
-**RISERVA** (NO evento, rispondi "È una riserva"):
-- Parole: "riserva", "riservato", "riservata"
-- Esempio: "Vitale: riserva"
+Giudici noti utili:
+Carlomagno, Di Iorio, Farinella, Fuccio, Fuccio Sanza, Cardinali, Cirillo, Puliafito, Beccia, Mannara, De Santis, Sodani, Petrocelli, Ferrante, Filocamo, Ferretti, Sorrentino, Barzellotti, Palmaccio, Vigorito, Vitelli, Nardone, Ragusa, Cerasoli, Roda, Ciabattari, Lombardi, Russo, Maellaro, Nappi, Petti, Coniglio, Croci, Bocola, Ciampelli, Arcieri, Karpinska, GDP, GUP, GIP, GOT, Collegio, Collegio A, Collegio B, Collegio C, Corte d'Appello.
 
-**TRATTENUTA** (NO evento, rispondi "È una trattenuta"):
-- Parole: "trattenuta", "trattenuto"
-- Esempio: "calicchio: gdp cerasoli: trattenuta"
+Correzioni typo frequenti dei giudici:
+Farinela->Farinella, Sodanoi->Sodani, Fuccuo->Fuccio, Petrucelli->Petrocelli, Di Ioro->Di Iorio, Puliafitto->Puliafito, Maelaro->Maellaro.
 
-**NOTA PROCEDURALE** (NO evento, rispondi "È una nota procedurale"):
-- Info senza data futura né sentenza
-- Esempio: "Avv. Gentili per canale 3201788775"
+Formato JSON obbligatorio.
+Se è rinvio:
+{{
+  "tipo": "rinvio",
+  "confidence": 0.0,
+  "eventi": [
+    {{
+      "parte": "",
+      "giudice": "",
+      "data": "DD/MM/YYYY",
+      "ora": "HH:MM",
+      "note": ""
+    }}
+  ],
+  "correzioni": [],
+  "warnings": []
+}}
 
-═══════════════════════════════════════════════════════════════
-📝 STILE DI SCRITTURA DI FABIO
-═══════════════════════════════════════════════════════════════
+Se non è rinvio:
+{{"tipo":"sentenza|riserva|trattenuta|nota","messaggio":"..."}}
 
-Fabio scrive appunti veloci con questo PATTERN tipico:
-**[PARTE] [GIUDICE] [cosa è successo] [DATA] [ORA] [prossimi incombenti]**
+Se serve conferma:
+{{
+  "tipo":"conferma",
+  "dubbio":"",
+  "interpretazione":{{"parte":"","giudice":"","data":"","ora":""}},
+  "domanda":""
+}}
 
-Varianti comuni:
-- "Rossi: avv. Bianchi: Sodani: rinvio al 15/3/26 h 10 per esame testi"
-- "Gamlouche di iorio impedimento 22/10/25 h 11"
-- "Bova puliafito 3/6/25 h 9.30 per discussione"
-- "Giuliano: di iorio, avv Lucia pepe, aperto dibattimento, rinvio al 18/9/24 h 10"
+Se la data è nel passato:
+{{
+  "tipo":"data_passata",
+  "data_letta":"",
+  "opzioni":[{{"id":"a","data":""}},{{"id":"b","data":""}}],
+  "domanda":""
+}}
 
-**REGOLE CHIAVE:**
-1. La PRIMA PAROLA è quasi sempre la PARTE (imputato/caso)
-2. "avv. X" o "avv X" = AVVOCATO (difensore), MAI il giudice
-3. Il GIUDICE è un cognome dalla lista O un cognome che appare nel contesto giusto
-4. La DATA viene dopo "rinvio al", "al", "udienza del" o da sola
-5. L'ORA viene dopo "h", "ore", "alle"
-
-═══════════════════════════════════════════════════════════════
-⚖️ RICONOSCIMENTO GIUDICE
-═══════════════════════════════════════════════════════════════
-
-**GIUDICI NOTI (Tribunale Civitavecchia e altri):**
-Carlomagno, Di Iorio, Farinella, Fuccio, Fuccio Sanza, Cardinali, Cirillo, 
-Puliafito, Beccia, Mannara, De Santis, Sodani, Petrocelli, Ferrante, 
-Filocamo, Ferretti, Sorrentino, Barzellotti, Palmaccio, Vigorito, Vitelli, 
-Nardone, Ragusa, Cerasoli, Roda, Ciabattari, Lombardi, Russo, Maellaro,
-Nappi, Petti, Coniglio, Croci, Bocola, Ciampelli, Arcieri, Karpinska,
-GDP, GUP, GIP, GOT, Collegio, Collegio A, Collegio B, Collegio C, Corte d'Appello
-
-**AVVOCATI (NON sono giudici) - preceduti da "avv" o "avv.":**
-Burgada, Candeloro, Fortino, Sciullo, Puggioni, Messina, Bruni, Martellino, 
-Di Giovanni, Montaruli, Panfilo, Fazzari, Gentili, Patrizi, Napolitano,
-Archilei, Lenzi, Fucci, Viola, Ascone, D'Orso, Milita, Vincenzi, Caliendo...
-
-**LOGICA RICONOSCIMENTO:**
-1. Se preceduto da "avv" o "avv." → È un AVVOCATO, non giudice
-2. Se nella lista giudici noti → È il GIUDICE
-3. Se cognome italiano/straniero nel contesto giusto → Probabilmente GIUDICE
-4. Se città (Roma, Milano, Grosseto, Taranto) → È la LOCATION, non il giudice
-5. Se nessun giudice riconosciuto → Usa "Tribunale Civitavecchia"
-
-**CORREZIONE TYPO GIUDICI (automatica):**
-- "Farinela" → "Farinella"
-- "Sodanoi" → "Sodani"  
-- "Fuccuo" → "Fuccio"
-- "Petrucelli" → "Petrocelli"
-- "Di Ioro" → "Di Iorio"
-- "Puliafitto" → "Puliafito"
-- "Maelaro" → "Maellaro"
-
-═══════════════════════════════════════════════════════════════
-📅 PARSING DATE - ULTRA TOLLERANTE
-═══════════════════════════════════════════════════════════════
-
-**FORMATI ACCETTATI (qualsiasi spaziatura):**
-- "15/3/26" "15/03/2026" "15/3/2026" "15 / 3 / 26"
-- "15.3.26" "15. 3. 2026" "15-3-26"
-- "15 marzo 2026" "15marzo26" "15 mar 26"
-- "al 15/3" "rinvio al 15/3/26" "udienza del 15/3"
-
-**ERRORI BATTITURA NUMERI:**
-- "O" (lettera) → "0": "15/O3/26" → "15/03/26"
-- "l" o "I" → "1": "l5/03/26" → "15/03/26"
-- "S" → "5", "B" → "8"
-- Spazi nel numero: "1 5/03" → "15/03"
-
-**LOGICA ANNO:**
-- Se manca anno → anno corrente (o prossimo se data è passata)
-- "26" → "2026", "25" → "2025"
-- Se anno completo nel passato (es. "15/01/2024") → CHIEDI CONFERMA
-
-**ORE:**
-- "h 10" "h10" "ore 10" "alle 10" "10:00" → 10:00
-- "h 10.30" "h 10,30" "10.30" → 10:30
-- "h 9.30" → 09:30
-- Se manca ora → default 09:00
-
-═══════════════════════════════════════════════════════════════
-👤 PARTI E COGNOMI
-═══════════════════════════════════════════════════════════════
-
-La PARTE è quasi sempre la PRIMA parola del messaggio.
-Accetta QUALSIASI cognome (italiano, straniero, composto):
-
-- Italiani: Rossi, De Luca, D'Angelo, Della Ragione
-- Stranieri: Kowalczyk, Müller, Al-Hassan, O'Brien, N'Diaye, Nguyen
-- Composti: "Rossi + Bianchi", "Fuccio Sanza"
-
-**NON correggere mai i cognomi delle parti!**
-
-═══════════════════════════════════════════════════════════════
-📋 MESSAGGI MULTIPLI
-═══════════════════════════════════════════════════════════════
-
-Se il messaggio contiene "———" o "——-" o "----" → sono PIÙ EVENTI separati.
-Se ci sono più date diverse → sono PIÙ EVENTI.
-Crea un evento per ciascuno.
-
-═══════════════════════════════════════════════════════════════
-🤖 COMPORTAMENTO AI: SII INTRAPRENDENTE!
-═══════════════════════════════════════════════════════════════
-
-**AGISCI AUTONOMAMENTE (90% dei casi):**
-- Correggi typo evidenti senza chiedere
-- Deduci il giudice dal contesto
-- Completa l'anno mancante
-- Interpreta abbreviazioni ("predib", "disc", "tpm")
-- Se giudice non riconosciuto ma sembra un cognome → usalo
-- Se città menzionata → usala come contesto
-
-**CHIEDI CONFERMA SOLO SE:**
-- Data nel passato con anno esplicito (es. "15/01/2024")
-- Data veramente ambigua (es. "3/4" potrebbe essere 3 aprile o 4 marzo)
-- Messaggio incomprensibile
-- Non riesci a capire se è rinvio o sentenza
-
-**RISPONDI BREVEMENTE SE NON È UN RINVIO:**
-- Sentenza → "📋 È una sentenza"
-- Riserva → "⏸️ È una riserva"
-- Trattenuta → "⚖️ È una trattenuta"
-- Nota → "📝 È una nota procedurale"
-
-═══════════════════════════════════════════════════════════════
-📤 FORMATO RISPOSTA JSON
-═══════════════════════════════════════════════════════════════
-
-MESSAGGIO DA ANALIZZARE:
+Messaggio originale:
 {message_text}
 
-**SE È UN RINVIO (o più rinvii):**
-{{
-    "tipo": "rinvio",
-    "eventi": [
-        {{
-            "parte": "Cognome parte/imputato",
-            "giudice": "Nome giudice (o Tribunale Civitavecchia)",
-            "data": "DD/MM/YYYY",
-            "ora": "HH:MM",
-            "note": "Messaggio integrale originale"
-        }}
-    ],
-    "correzioni": [
-        {{"campo": "giudice", "da": "Farinela", "a": "Farinella"}}
-    ]
-}}
+Messaggio normalizzato:
+{normalized_message}
 
-**SE È UNA SENTENZA:**
-{{
-    "tipo": "sentenza",
-    "messaggio": "📋 È una sentenza"
-}}
+Analisi tecnica preliminare:
+{json.dumps(analysis, ensure_ascii=False)}
 
-**SE È UNA RISERVA:**
-{{
-    "tipo": "riserva", 
-    "messaggio": "⏸️ È una riserva"
-}}
-
-**SE È UNA TRATTENUTA:**
-{{
-    "tipo": "trattenuta",
-    "messaggio": "⚖️ È una trattenuta"  
-}}
-
-**SE È UNA NOTA:**
-{{
-    "tipo": "nota",
-    "messaggio": "📝 È una nota procedurale"
-}}
-
-**SE HAI DUBBI (chiedi conferma):**
-{{
-    "tipo": "conferma",
-    "dubbio": "Spiegazione del dubbio",
-    "interpretazione": {{
-        "parte": "...",
-        "giudice": "...",
-        "data": "...",
-        "ora": "..."
-    }},
-    "domanda": "Va bene così? (sì/no)"
-}}
-
-**SE DATA PASSATA:**
-{{
-    "tipo": "data_passata",
-    "data_letta": "15/01/2024",
-    "opzioni": [
-        {{"id": "a", "data": "15/01/2025"}},
-        {{"id": "b", "data": "15/01/2026"}}
-    ],
-    "domanda": "La data è nel passato. Intendevi: a) 15/01/2025 o b) 15/01/2026?"
-}}
-
-═══════════════════════════════════════════════════════════════
-📚 ESEMPI REALI DAI MESSAGGI DI FABIO
-═══════════════════════════════════════════════════════════════
-
-**Esempio 1 - Rinvio semplice:**
-Input: "Rossi Sodani rinvio al 15/3/26 h 10 per esame testi"
-Output: tipo=rinvio, parte=Rossi, giudice=Sodani, data=15/03/2026, ora=10:00
-
-**Esempio 2 - Con avvocato (non è il giudice!):**
-Input: "Giuliano: di iorio, avv Lucia pepe, rinvio al 18/9/24 h 10"
-Output: tipo=rinvio, parte=Giuliano, giudice=Di Iorio, data=18/09/2024, ora=10:00
-
-**Esempio 3 - Sentenza:**
-Input: "De caro: beccia: 530 assolto fatto non sussiste, motivi contestuali"
-Output: tipo=sentenza, messaggio="📋 È una sentenza"
-
-**Esempio 4 - Riserva:**
-Input: "Vitale: riserva"
-Output: tipo=riserva, messaggio="⏸️ È una riserva"
-
-**Esempio 5 - Trattenuta:**
-Input: "calicchio: gdp cerasoli: trattenuta"
-Output: tipo=trattenuta, messaggio="⚖️ È una trattenuta"
-
-**Esempio 6 - Messaggio multiplo (2 eventi):**
-Input: "Pomponi: di iorio rinvio al 25/6/25 ore 11
-————
-Iannace: Fuccio sanza' stessi incombenti al 18/6/25 h 9.30"
-Output: tipo=rinvio, eventi=[{{parte=Pomponi, giudice=Di Iorio, data=25/06/2025, ora=11:00}}, {{parte=Iannace, giudice=Fuccio Sanza, data=18/06/2025, ora=09:30}}]
-
-**Esempio 7 - Typo giudice (correggi automaticamente):**
-Input: "Bianchi Farinela 15/3 h 9"
-Output: tipo=rinvio, parte=Bianchi, giudice=Farinella, correzioni=[giudice: Farinela→Farinella]
-
-**Esempio 8 - Giudice non in lista (usa comunque):**
-Input: "Müller Bortolini 20/03 h 9"
-Output: tipo=rinvio, parte=Müller, giudice=Bortolini (non chiedere conferma, usalo!)
-
-**Esempio 9 - Nessun giudice riconoscibile:**
-Input: "Kowalczyk 15/3/26 h 10 per discussione"
-Output: tipo=rinvio, parte=Kowalczyk, giudice=Tribunale Civitavecchia
-
-**Esempio 10 - Città come contesto:**
-Input: "Airi: grosseto, rinvio al 13/10/23 h 12.30"
-Output: tipo=rinvio, parte=Airi, giudice=Grosseto (usa la città!)
-
-**Esempio 11 - Data con errore battitura:**
-Input: "Rossi Sodani l5/O3 h 9"
-Output: tipo=rinvio, parte=Rossi, giudice=Sodani, data=15/03/{datetime.now(pytz.timezone('Europe/Rome')).year}, ora=09:00, correzioni=[data: l5/O3→15/03]
-
-Rispondi SOLO JSON valido, no markdown, no commenti."""
+Rispondi solo con JSON valido."""
 
         message = client.messages.create(
             model="claude-3-haiku-20240307",
@@ -348,12 +501,18 @@ Rispondi SOLO JSON valido, no markdown, no commenti."""
         )
         
         response_text = message.content[0].text.strip()
-        response_text = response_text.replace('```json', '').replace('```', '').strip()
-        
-        parsed_data = json.loads(response_text)
+        parsed_data = extract_json_object(response_text)
+        if not parsed_data:
+            logger.error(f"Risposta AI non parseabile: {response_text}")
+            return None
+
+        parsed_data = validate_and_normalize_parsed_data(parsed_data, normalized_message)
+        confirmation_reason = should_require_confirmation(parsed_data, analysis)
+        if confirmation_reason:
+            parsed_data = build_confirmation_from_events(parsed_data, confirmation_reason)
         logger.info(f"AI parsed data: {parsed_data}")
         return parsed_data
-        
+
     except Exception as e:
         logger.error(f"Errore parsing AI: {e}")
         return None
