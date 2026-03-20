@@ -20,11 +20,27 @@ Shared sync log for all AI agents working on WORKDB and RinviaBot v3.
 
 ## Current build
 
-- Build: `0.4.11`
-- Updated at: `2026-02-24`
+- Build: `0.4.12`
+- Updated at: `2026-03-20`
 - Updated by: `Codex`
 
 ## Changelog (newest first)
+
+### 0.4.12 - 2026-03-20 - Codex
+- Consolidated the repository to a single root-level bot structure for clearer local and remote workflows.
+- Moved `AISYNC.md` to the repository root and removed the duplicated nested project files.
+- Added `MAP.md` as an operational map for architecture, refactor planning, and debug work.
+- Ignored `.DS_Store` and removed tracked macOS metadata files from the repository structure.
+- Files:
+  - /Users/fabio/workspace/rinviabot v3/.gitignore
+  - /Users/fabio/workspace/rinviabot v3/AISYNC.md
+  - /Users/fabio/workspace/rinviabot v3/MAP.md
+  - /Users/fabio/workspace/rinviabot v3/rinviabot v3/AISYNC.md
+  - /Users/fabio/workspace/rinviabot v3/rinviabot v3/Procfile
+  - /Users/fabio/workspace/rinviabot v3/rinviabot v3/README.md
+  - /Users/fabio/workspace/rinviabot v3/rinviabot v3/bot.py
+  - /Users/fabio/workspace/rinviabot v3/rinviabot v3/gitignore.txt
+  - /Users/fabio/workspace/rinviabot v3/rinviabot v3/requirements.txt
 
 ### 0.4.11 - 2026-02-24 - Codex
 - Added new admin page `Import Chat TXT` to process RinviaBot export chat text files.
