@@ -9,7 +9,7 @@ import re
 from typing import Any, Optional
 from urllib import request as urllib_request
 from urllib import error as urllib_error
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 import anthropic
 from dateutil import parser
@@ -815,6 +815,14 @@ def build_confirmation_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def build_persistent_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [['📝']],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
 def get_mask_store(context: ContextTypes.DEFAULT_TYPE) -> dict[str, dict[str, Any]]:
     return context.bot_data.setdefault('input_masks', {})
 
@@ -1520,7 +1528,7 @@ def create_google_calendar_event(event_data, trace_id: Optional[str] = None):
 
 
 async def reply_and_log(update: Update, trace_id: str, reply_text: str, reply_category: str, **extra: Any) -> None:
-    await update.message.reply_text(reply_text)
+    await update.message.reply_text(reply_text, reply_markup=build_persistent_keyboard())
     log_pipeline_event(
         'telegram_reply_sent',
         trace_id,
@@ -1744,6 +1752,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         username=update.effective_user.username if update.effective_user else None,
         text=message_text,
     )
+
+    if normalize_whitespace(message_text) == '📝':
+        await handle_mask_start(update, context)
+        return
 
     mask_form = get_mask_form(
         context,
