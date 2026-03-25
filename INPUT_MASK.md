@@ -68,15 +68,16 @@ Il bot legge data/ora in `Rinvio` e, se presente, mette il resto in `Successo`.
 
 ## Logica
 
-- la maschera non passa dal parser libero
-- costruisce un evento in modo diretto
-- usa:
-  - `parte`
-  - `giudice`
-  - `domiciliatario`
-  - `rinvio` per data/ora
-  - `successo` come nota sintetica
-  - `altro` per tentare un luogo e conservare contesto
+- la maschera non passa dal messaggio libero
+- costruisce un testo strutturato interno
+- quel testo viene letto da Claude
+- poi passa comunque dal validatore finale del bot
+- questo serve soprattutto per leggere meglio:
+  - data
+  - ora
+  - luogo
+  - note
+- i campi raccolti dalla maschera restano quindi guidati, ma la lettura finale e' intelligente
 
 ## Coesistenza con il flusso libero
 

@@ -934,42 +934,17 @@ def extract_remainder_after_datetime(value: str) -> str:
     return normalize_whitespace(match.group(2))
 
 
-def build_event_from_mask(fields: dict[str, Any]) -> tuple[Optional[dict[str, Any]], Optional[str]]:
-    rinvio_value = normalize_whitespace(str(fields.get('rinvio', '') or ''))
-    if not rinvio_value:
-        return None, "Per creare l'evento dalla maschera mi serve almeno il campo Rinvio con data e ora."
-
-    data = normalize_event_date(rinvio_value)
-    ora = normalize_event_time(rinvio_value)
-    if not data or not ora:
-        return None, "Nel campo Rinvio non riesco a leggere bene data e ora."
-
-    parte = normalize_whitespace(str(fields.get('parte', '') or ''))
-    giudice = normalize_judge_name(str(fields.get('giudice', '') or ''))
-    altro = normalize_whitespace(str(fields.get('altro', '') or ''))
-    luogo = normalize_location_name(altro, altro) if altro else ''
-
-    note_segments: list[str] = []
-    domiciliatario = normalize_whitespace(str(fields.get('domiciliatario', '') or ''))
-    successo = normalize_whitespace(str(fields.get('successo', '') or ''))
-    if domiciliatario:
-        note_segments.append(f"Domiciliatario: {domiciliatario}")
-    if successo:
-        note_segments.append(f"Successo: {successo}")
-    if altro:
-        note_segments.append(f"Altro: {altro}")
-
-    original = build_mask_structured_text(fields)
-    note = normalize_event_notes(' | '.join(note_segments), original)
-
-    return {
-        'parte': parte or 'Udienza',
-        'giudice': giudice,
-        'luogo': luogo,
-        'data': data,
-        'ora': ora,
-        'note': note,
-    }, None
+def build_mask_prompt_text(fields: dict[str, Any]) -> str:
+    parts: list[str] = [
+        "MESSAGGIO DA MASCHERA GUIDATA",
+        "Leggi i campi come input strutturato, ma interpreta con intelligenza data, ora, luogo e note.",
+        "",
+    ]
+    for field in MASK_FIELD_ORDER:
+        value = normalize_whitespace(str(fields.get(field, '') or ''))
+        if value:
+            parts.append(f"{MASK_FIELD_LABELS[field].upper()}: {value}")
+    return '\n'.join(parts)
 
 
 def normalize_event_date(date_value: str) -> Optional[str]:
@@ -2150,18 +2125,61 @@ async def handle_mask_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if action == 'mask:create':
-        evento, error_message = build_event_from_mask(form.get('fields', {}))
-        if error_message:
+        fields = form.get('fields', {})
+        rinvio_value = normalize_whitespace(str(fields.get('rinvio', '') or ''))
+        if not rinvio_value:
             await query.edit_message_text(
-                f"⚠️ {error_message}\n\n{render_mask_summary(form.get('fields', {}))}",
+                f"⚠️ Per creare l'evento dalla maschera mi serve almeno il campo Rinvio.\n\n{render_mask_summary(fields)}",
                 reply_markup=build_mask_keyboard(),
             )
             return
 
+        mask_text = build_mask_prompt_text(fields)
+        log_pipeline_event(
+            'mask_parse_requested',
+            trace_id,
+            chat_id=update.effective_chat.id,
+            user_id=update.effective_user.id,
+            mask_text=mask_text,
+            fields=fields,
+        )
+        parsed_data = parse_message_with_ai(mask_text, trace_id=trace_id)
+        if not parsed_data:
+            await query.edit_message_text(
+                f"⚠️ Non riesco a interpretare la maschera in modo affidabile.\n\n{render_mask_summary(fields)}",
+                reply_markup=build_mask_keyboard(),
+            )
+            return
+
+        if parsed_data.get('tipo') == 'conferma':
+            await query.edit_message_text(
+                "⚠️ La maschera e' ancora ambigua.\n\n"
+                f"{parsed_data.get('dubbio', 'Mi serve un dettaglio in piu.')}\n\n"
+                f"{render_mask_summary(fields)}",
+                reply_markup=build_mask_keyboard(),
+            )
+            return
+
+        if parsed_data.get('tipo') != 'rinvio':
+            await query.edit_message_text(
+                f"⚠️ La maschera non ha prodotto un rinvio utilizzabile (`{parsed_data.get('tipo', 'sconosciuto')}`).\n\n{render_mask_summary(fields)}",
+                reply_markup=build_mask_keyboard(),
+            )
+            return
+
+        eventi = parsed_data.get('eventi', [])
+        if not eventi:
+            await query.edit_message_text(
+                f"⚠️ Non trovo eventi utilizzabili dopo la lettura della maschera.\n\n{render_mask_summary(fields)}",
+                reply_markup=build_mask_keyboard(),
+            )
+            return
+
+        evento = eventi[0]
         event_data = format_calendar_event(evento or {})
         if not event_data:
             await query.edit_message_text(
-                f"⚠️ Non riesco a formattare l'evento dalla maschera.\n\n{render_mask_summary(form.get('fields', {}))}",
+                f"⚠️ Non riesco a formattare l'evento letto dalla maschera.\n\n{render_mask_summary(fields)}",
                 reply_markup=build_mask_keyboard(),
             )
             return
@@ -2169,7 +2187,7 @@ async def handle_mask_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         created = create_google_calendar_event(event_data, trace_id=trace_id)
         if not created:
             await query.edit_message_text(
-                f"⚠️ Errore nella creazione dell'evento da maschera.\n\n{render_mask_summary(form.get('fields', {}))}",
+                f"⚠️ Errore nella creazione dell'evento da maschera.\n\n{render_mask_summary(fields)}",
                 reply_markup=build_mask_keyboard(),
             )
             return
@@ -2191,6 +2209,7 @@ async def handle_mask_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             user_id=update.effective_user.id,
             evento=evento,
             html_link=created.get('htmlLink'),
+            parsed_data=parsed_data,
         )
         return
 
