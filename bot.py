@@ -148,14 +148,13 @@ RECURRING_ACTIVITIES = {
     'residui testi pm',
 }
 PENDING_EXPIRY_HOURS = 12
-MASK_FIELD_ORDER = ['parte', 'domiciliatario', 'giudice', 'successo', 'succedera', 'rinvio', 'altro']
+MASK_FIELD_ORDER = ['parte', 'giudice', 'domiciliatario', 'rinvio', 'successo', 'altro']
 MASK_FIELD_LABELS = {
     'parte': 'Parte',
-    'domiciliatario': 'Domiciliatario',
     'giudice': 'Giudice',
-    'successo': 'Cosa e\' successo',
-    'succedera': 'Cosa succedera\'',
+    'domiciliatario': 'Domiciliatario',
     'rinvio': 'Rinvio',
+    'successo': 'Successo',
     'altro': 'Altro',
 }
 
@@ -853,18 +852,11 @@ def clear_mask_form(context: ContextTypes.DEFAULT_TYPE, chat_id: Any, user_id: A
 def build_mask_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("Parte", callback_data='mask:field:parte'),
-            InlineKeyboardButton("Domiciliatario", callback_data='mask:field:domiciliatario'),
-        ],
-        [
-            InlineKeyboardButton("Giudice", callback_data='mask:field:giudice'),
-            InlineKeyboardButton("Successo", callback_data='mask:field:successo'),
-        ],
-        [
-            InlineKeyboardButton("Succedera'", callback_data='mask:field:succedera'),
+            InlineKeyboardButton("Parte/Giudice/Domic.", callback_data='mask:field:pgd'),
             InlineKeyboardButton("Rinvio", callback_data='mask:field:rinvio'),
         ],
         [
+            InlineKeyboardButton("Successo", callback_data='mask:field:successo'),
             InlineKeyboardButton("Altro", callback_data='mask:field:altro'),
         ],
         [
@@ -882,7 +874,8 @@ def render_mask_summary(fields: dict[str, Any]) -> str:
         lines.append(f"{label}: {value or '-'}")
     lines.extend([
         "",
-        "Scegli un campo da compilare oppure crea l'evento.",
+        "Campi principali: Parte/Giudice/Domiciliatario e Rinvio.",
+        "Successo e Altro sono opzionali.",
     ])
     return '\n'.join(lines)
 
@@ -894,6 +887,43 @@ def build_mask_structured_text(fields: dict[str, Any]) -> str:
         if value:
             parts.append(f"{MASK_FIELD_LABELS[field].upper()}: {value}")
     return '\n'.join(parts)
+
+
+def split_compact_mask_values(message_text: str) -> list[str]:
+    text = normalize_message_text(message_text)
+    if not text:
+        return []
+    if '|' in text:
+        return [normalize_whitespace(part) for part in text.split('|') if normalize_whitespace(part)]
+    if ';' in text:
+        return [normalize_whitespace(part) for part in text.split(';') if normalize_whitespace(part)]
+    return [normalize_whitespace(part) for part in re.split(r'\s{2,}', text) if normalize_whitespace(part)]
+
+
+def apply_compact_identity_fields(fields: dict[str, Any], message_text: str) -> None:
+    values = split_compact_mask_values(message_text)
+    if not values:
+        return
+    if len(values) == 1:
+        tokens = values[0].split()
+        if len(tokens) == 2:
+            fields['parte'] = values[0]
+            return
+    mapping = ['parte', 'giudice', 'domiciliatario']
+    for field, value in zip(mapping, values[:3]):
+        fields[field] = value
+
+
+def extract_remainder_after_datetime(value: str) -> str:
+    text = normalize_message_text(value)
+    match = re.search(
+        r'^(.*?\b\d{1,2}[\/.\-]\d{1,2}(?:[\/.\-]\d{2,4})?(?:\s*(?:h|ore|alle)?\s*\d{1,2}(?::|[.,])?\d{0,2})?)(.*)$',
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ''
+    return normalize_whitespace(match.group(2))
 
 
 def build_event_from_mask(fields: dict[str, Any]) -> tuple[Optional[dict[str, Any]], Optional[str]]:
@@ -914,13 +944,10 @@ def build_event_from_mask(fields: dict[str, Any]) -> tuple[Optional[dict[str, An
     note_segments: list[str] = []
     domiciliatario = normalize_whitespace(str(fields.get('domiciliatario', '') or ''))
     successo = normalize_whitespace(str(fields.get('successo', '') or ''))
-    succedera = normalize_whitespace(str(fields.get('succedera', '') or ''))
     if domiciliatario:
         note_segments.append(f"Domiciliatario: {domiciliatario}")
     if successo:
-        note_segments.append(f"Cosa e' successo: {successo}")
-    if succedera:
-        note_segments.append(f"Cosa succedera': {succedera}")
+        note_segments.append(f"Successo: {successo}")
     if altro:
         note_segments.append(f"Altro: {altro}")
 
@@ -1725,8 +1752,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     if mask_form and mask_form.get('mode') == 'awaiting_field':
         active_field = str(mask_form.get('active_field') or '')
-        if active_field in MASK_FIELD_ORDER:
-            mask_form['fields'][active_field] = normalize_whitespace(message_text)
+        if active_field in MASK_FIELD_ORDER or active_field == 'pgd':
+            if active_field == 'pgd':
+                apply_compact_identity_fields(mask_form['fields'], message_text)
+            elif active_field == 'rinvio':
+                normalized_value = normalize_whitespace(message_text)
+                mask_form['fields']['rinvio'] = normalized_value
+                remainder = extract_remainder_after_datetime(normalized_value)
+                if remainder and not mask_form['fields'].get('successo'):
+                    mask_form['fields']['successo'] = remainder
+            else:
+                mask_form['fields'][active_field] = normalize_whitespace(message_text)
             mask_form['mode'] = 'idle'
             mask_form['active_field'] = None
             log_pipeline_event(
@@ -2072,14 +2108,33 @@ async def handle_mask_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if action.startswith('mask:field:'):
         field = action.split(':', 2)[2]
-        if field not in MASK_FIELD_ORDER:
+        if field not in MASK_FIELD_ORDER and field != 'pgd':
             await query.edit_message_text("ℹ️ Campo non riconosciuto.")
             return
         form['mode'] = 'awaiting_field'
         form['active_field'] = field
-        await query.edit_message_text(
-            f"✏️ Scrivi il valore per {MASK_FIELD_LABELS[field]}.\n\nPuoi inviare solo quel campo, poi ti rimostro la scheda aggiornata."
-        )
+        if field == 'pgd':
+            text = (
+                "✏️ Inserisci fino a 3 blocchi in questo ordine:\n"
+                "Parte  Giudice  Domiciliatario\n\n"
+                "Esempi:\n"
+                "- `Gubiotti  Farinella  Candeloro`\n"
+                "- `Gubiotti  Farinella`\n"
+                "- `Gubiotti`\n\n"
+                "Usa preferibilmente spazi doppi tra i blocchi. Se usi un solo spazio il bot provera' comunque a capirti.\n\n"
+                "Se inserisci solo due blocchi, usero' i primi due campi e basta."
+            )
+        elif field == 'rinvio':
+            text = (
+                "✏️ Inserisci il rinvio nel formato:\n"
+                "Data Ora Cosa succedera'\n\n"
+                "Esempio:\n"
+                "- `30/03/2026 h 11.15 discussione`\n\n"
+                "Leggero' data e ora nel campo Rinvio e, se presente, il resto andra' in Successo."
+            )
+        else:
+            text = f"✏️ Scrivi il valore per {MASK_FIELD_LABELS[field]}."
+        await query.edit_message_text(text)
         return
 
     if action == 'mask:create':

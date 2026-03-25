@@ -16,15 +16,12 @@ Obiettivo:
 
 ## Campi
 
-- `Parte`
-- `Domiciliatario`
-- `Giudice`
-- `Cosa e' successo`
-- `Cosa succedera'`
+- `Parte/Giudice/Domiciliatario`
 - `Rinvio`
+- `Successo`
 - `Altro`
 
-Tutti i campi sono opzionali, tranne il fatto che per creare un evento serve almeno `Rinvio` leggibile come data/ora.
+Tutti i campi sono opzionali, ma per creare un evento serve almeno `Rinvio` leggibile come data/ora.
 
 ## UX
 
@@ -36,6 +33,39 @@ Tutti i campi sono opzionali, tranne il fatto che per creare un evento serve alm
 6. Fabio puo' compilare i campi in ordine libero
 7. Con `Crea evento` il bot crea direttamente l'evento
 
+## Formati compatti
+
+### Parte/Giudice/Domiciliatario
+
+Ordine fisso:
+
+- `Parte  Giudice  Domiciliatario`
+
+Esempi:
+
+- `Gubiotti  Farinella  Candeloro`
+- `Gubiotti  Farinella`
+- `Gubiotti`
+
+Separatore preferito:
+
+- spazi doppi tra i blocchi
+
+Se vengono inseriti solo due blocchi, vengono riempiti solo i primi due campi.
+Se viene usato un solo spazio, il bot prova comunque a interpretare l'input nel modo piu' sensato.
+
+### Rinvio
+
+Formato compatto:
+
+- `Data Ora Cosa succedera'`
+
+Esempio:
+
+- `30/03/2026 h 11.15 discussione`
+
+Il bot legge data/ora in `Rinvio` e, se presente, mette il resto in `Successo`.
+
 ## Logica
 
 - la maschera non passa dal parser libero
@@ -43,12 +73,12 @@ Tutti i campi sono opzionali, tranne il fatto che per creare un evento serve alm
 - usa:
   - `parte`
   - `giudice`
+  - `domiciliatario`
   - `rinvio` per data/ora
-  - `altro` per tentare un luogo
-  - tutti gli altri campi nelle note
+  - `successo` come nota sintetica
+  - `altro` per tentare un luogo e conservare contesto
 
 ## Coesistenza con il flusso libero
 
 - messaggio libero: Claude + validatore + eventuale dubbio
 - `/1`: compilazione guidata + creazione quasi deterministica
-
