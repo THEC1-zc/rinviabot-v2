@@ -3,6 +3,12 @@ __pycache__/
 *.py[codz]
 *$py.class
 .DS_Store
+LOCAL_SECRETS.md
+logs/
+exports/
+Sync Telegram Logs.command
+cloudflare/logger-worker/wrangler.toml
+cloudflare/logger-worker/.wrangler/
 
 # C extensions
 *.so
@@ -206,3 +212,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Telegram userbot local session
+.telegram-userbot/
