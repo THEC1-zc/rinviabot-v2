@@ -37,6 +37,7 @@ TELEGRAM_RAW_LOG_PATH = LOG_DIR / 'telegram' / 'raw' / 'messages.jsonl'
 CHAT_EXPORT_DIR = Path('exports') / 'chat'
 REMOTE_LOG_ENDPOINT = os.getenv('REMOTE_LOG_ENDPOINT', '').strip()
 REMOTE_LOG_TOKEN = os.getenv('REMOTE_LOG_TOKEN', '').strip()
+ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-3-5-haiku-latest').strip()
 
 # Client Anthropic
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
@@ -1337,7 +1338,7 @@ Rispondi solo con JSON valido."""
             )
 
         message = client.messages.create(
-            model="claude-3-haiku-20240307",
+            model=ANTHROPIC_MODEL,
             max_tokens=1000,
             messages=[
                 {"role": "user", "content": prompt}
@@ -1359,7 +1360,7 @@ Rispondi solo con JSON valido."""
                 log_pipeline_event(
                     'pipeline_failed',
                     trace_id,
-                    stage='claude_response_received',
+                    failed_stage='claude_response_received',
                     error='Risposta AI non parseabile',
                     raw_response=response_text,
                 )
@@ -1394,7 +1395,7 @@ Rispondi solo con JSON valido."""
             log_pipeline_event(
                 'pipeline_failed',
                 trace_id,
-                stage='parse_message_with_ai',
+                failed_stage='parse_message_with_ai',
                 error=str(e),
             )
         return None
@@ -1587,7 +1588,7 @@ def parse_message_with_ai_rewrite(
                 previous_parsed_data=previous_parsed_data,
             )
         message = client.messages.create(
-            model="claude-3-haiku-20240307",
+            model=ANTHROPIC_MODEL,
             max_tokens=1000,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -1600,7 +1601,7 @@ def parse_message_with_ai_rewrite(
     except Exception as exc:
         logger.error(f"Errore rilettura dubbio: {exc}")
         if trace_id:
-            log_pipeline_event('pipeline_failed', trace_id, stage='clarification_reanalysis', error=str(exc))
+            log_pipeline_event('pipeline_failed', trace_id, failed_stage='clarification_reanalysis', error=str(exc))
         return None
 
 
@@ -1977,7 +1978,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_pipeline_event(
         'pipeline_failed',
         trace_id,
-        stage='error_handler',
+        failed_stage='error_handler',
         error=str(context.error),
     )
     if update and update.message:
