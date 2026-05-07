@@ -113,12 +113,15 @@ KNOWN_LAWYERS = {
     'frattasi', 'd’angerio', "d'angerio", 'righetti', 'fabio viscarelli',
     'saginario mirko', 'messina', 'burgada', 'candeloro', 'monteleone',
     'moffa', 'bruni', 'corazzelli', 'fortino', 'poddesu', 'crescioni',
-    'pecchi', 'mottola', 'vincenzo corazzelli', 'michele petracca'
+    'pecchi', 'mottola', 'vincenzo corazzelli', 'michele petracca',
+    'catanzaro', 'alimonti', 'lattanzi', 'esposito', 'archilei',
+    'bolognesi', 'anzi', 'albertario'
 }
 
 COURT_LOCATION_KEYWORDS = {
     'tribunale', "corte d'appello", 'corte di appello', 'corte appello',
-    'collegio', 'sez', 'sezione', 'gdp', 'gup', 'gip', 'got'
+    'collegio', 'sez', 'sezione', 'gdp', 'gup', 'gip', 'got',
+    'gm', 'monocratico', 'mono', 'civitavecchia', 'roma', 'carcere'
 }
 
 REFERENCE_PATTERNS = [
@@ -582,12 +585,83 @@ def extract_times_from_text(message_text: str) -> list[str]:
     return found
 
 
+def append_unique(values: list[str], value: str) -> None:
+    normalized = normalize_whitespace(value)
+    if normalized and normalized not in values:
+        values.append(normalized)
+
+
+def extract_known_judge_mentions(message_text: str) -> list[str]:
+    lowered = normalize_message_text(message_text).lower()
+    found: list[str] = []
+    for key, label in sorted(KNOWN_JUDGES.items(), key=lambda item: len(item[0]), reverse=True):
+        if label in {'GDP', 'GUP', 'GIP', 'GOT', 'Collegio', 'Collegio A', 'Collegio B', 'Collegio C', "Corte d'Appello"}:
+            continue
+        if len(key) < 3:
+            continue
+        if re.search(rf'(?<!\w){re.escape(key)}(?!\w)', lowered, flags=re.IGNORECASE):
+            append_unique(found, label)
+    for typo, label in sorted(JUDGE_TYPO_MAP.items(), key=lambda item: len(item[0]), reverse=True):
+        if re.search(rf'(?<!\w){re.escape(typo)}(?!\w)', lowered, flags=re.IGNORECASE):
+            append_unique(found, label)
+    return found
+
+
+def extract_lawyer_mentions(message_text: str) -> list[str]:
+    normalized = normalize_message_text(message_text)
+    lowered = normalized.lower()
+    found: list[str] = []
+    for match in re.finditer(r'(?i:\bavv\.?\s+)([A-ZÀ-Ý][A-Za-zÀ-ÿ\'’.-]+(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ\'’.-]+)?)', normalized):
+        append_unique(found, match.group(1).title())
+    for lawyer in sorted(KNOWN_LAWYERS, key=len, reverse=True):
+        if re.search(rf'(?<!\w){re.escape(lawyer)}(?!\w)', lowered, flags=re.IGNORECASE):
+            append_unique(found, lawyer.title())
+    return found
+
+
+def extract_location_mentions(message_text: str) -> list[str]:
+    normalized = normalize_message_text(message_text)
+    lowered = normalized.lower()
+    found: list[str] = []
+    if re.search(r'\btribunale(?:\s+di)?\s+[A-Za-zÀ-ÿ]+', normalized, flags=re.IGNORECASE):
+        append_unique(found, normalize_location_name('', normalized))
+    if re.search(r'\bcorte\s+d[’\']appello\b|\bcorte\s+di\s+appello\b', lowered):
+        append_unique(found, normalize_location_name('', normalized))
+    for label in ('gup', 'gip', 'gdp', 'got', 'collegio', 'gm', 'monocratico', 'mono', 'carcere'):
+        if re.search(rf'(?<!\w){label}(?!\w)', lowered, flags=re.IGNORECASE):
+            if label == 'mono':
+                append_unique(found, 'Monocratico')
+            elif label == 'gm':
+                append_unique(found, 'GM')
+            else:
+                append_unique(found, label.upper() if len(label) <= 3 else label.title())
+    for city in ('civitavecchia', 'roma', 'ladispoli'):
+        if re.search(rf'(?<!\w){city}(?!\w)', lowered, flags=re.IGNORECASE):
+            append_unique(found, f"Tribunale di {city.title()}" if city in {'civitavecchia', 'roma'} else city.title())
+    return found
+
+
+def build_reliable_reading_hints(message_text: str, dates: list[str], times: list[str]) -> dict[str, Any]:
+    normalized = normalize_message_text(message_text)
+    return {
+        'possible_party_from_opening': extract_primary_party_candidate(normalized),
+        'date_candidates': dates,
+        'time_candidates': times,
+        'known_judges_mentioned': extract_known_judge_mentions(normalized),
+        'lawyers_or_defenders_mentioned': extract_lawyer_mentions(normalized),
+        'location_or_office_mentions': extract_location_mentions(normalized),
+        'procedure_references': extract_reference_segments(normalized),
+        'recurring_activities': extract_recurring_activities(normalized),
+    }
+
+
 def build_message_analysis(message_text: str) -> dict[str, Any]:
     normalized = normalize_message_text(message_text)
     blocks = split_message_blocks(message_text)
     lowered = normalized.lower()
     dates = extract_dates_from_text(normalized)
     times = extract_times_from_text(normalized)
+    reliable_hints = build_reliable_reading_hints(normalized, dates, times)
 
     return {
         'normalized_message': normalized,
@@ -599,6 +673,7 @@ def build_message_analysis(message_text: str) -> dict[str, Any]:
         'has_non_hearing_keywords': [kw for kw in NON_HEARING_KEYWORDS if kw in lowered],
         'has_hearing_hints': [kw for kw in HEARING_HINTS if kw in lowered],
         'first_token': normalize_whitespace(re.split(r'[:\n, ]', normalized, maxsplit=1)[0]) if normalized else '',
+        'reliable_hints': reliable_hints,
     }
 
 
@@ -686,8 +761,10 @@ def normalize_location_name(value: str, original_message: str = '') -> str:
         return base
     if lowered.startswith('collegio'):
         return 'Collegio'
-    if lowered in {'gdp', 'gup', 'gip', 'got'}:
+    if lowered in {'gdp', 'gup', 'gip', 'got', 'gm'}:
         return lowered.upper()
+    if lowered in {'mono', 'monocratico'}:
+        return 'Monocratico'
     return raw or 'Tribunale Civitavecchia'
 
 
@@ -708,6 +785,17 @@ def looks_like_lawyer(value: str) -> bool:
     if re.search(r'\bavv\.?\b|\bdifens', lowered):
         return True
     return lowered in KNOWN_LAWYERS
+
+
+def normalize_person_key(value: str) -> str:
+    return re.sub(r'\s+', ' ', normalize_whitespace(value).lower()).strip()
+
+
+def matches_mentioned_lawyer(value: str, message_text: str) -> bool:
+    key = normalize_person_key(value)
+    if not key:
+        return False
+    return any(key == normalize_person_key(lawyer) for lawyer in extract_lawyer_mentions(message_text))
 
 
 def has_judicial_context(message_text: str) -> bool:
@@ -748,6 +836,7 @@ def extract_primary_party_candidate(message_text: str) -> str:
     if not normalized:
         return ''
     first_line = normalized.split('\n', 1)[0]
+    first_line = re.split(r'\bavv\.?\b', first_line, maxsplit=1, flags=re.IGNORECASE)[0]
     first_line = re.split(r'[:,-]', first_line, maxsplit=1)[0]
     tokens = re.findall(r"[A-Za-zÀ-ÿ'’.-]+", first_line)
     if not tokens:
@@ -1057,6 +1146,8 @@ def normalize_event_date(date_value: str) -> Optional[str]:
     raw = normalize_whitespace(date_value)
     if not raw:
         return None
+    if re.fullmatch(r'\d{1,2}\.\d{1,2}\.\d{2,4}', raw):
+        raw = raw.replace('.', '/')
 
     try:
         dt = parser.parse(raw, dayfirst=True, default=datetime.now(ROME_TZ).replace(hour=9, minute=0, second=0, microsecond=0))
@@ -1071,6 +1162,12 @@ def normalize_event_time(time_value: str) -> Optional[str]:
     raw = normalize_whitespace(time_value)
     if not raw:
         return '09:00'
+    raw = re.sub(r'^(?:h|ore|alle)\s*', '', raw, flags=re.IGNORECASE).strip()
+    raw = raw.replace(',', '.')
+    if re.fullmatch(r'\d{1,2}$', raw):
+        raw = f'{raw}:00'
+    elif re.fullmatch(r'\d{1,2}\.\d{1,2}', raw):
+        raw = raw.replace('.', ':')
 
     try:
         dt = parser.parse(raw, default=datetime.now(ROME_TZ).replace(hour=9, minute=0, second=0, microsecond=0))
@@ -1150,6 +1247,11 @@ def validate_and_normalize_parsed_data(parsed_data: dict[str, Any], original_mes
         ora = normalize_event_time(str(evento.get('ora', '')))
         note = normalize_event_notes(str(evento.get('note', '') or original_message), original_message)
 
+        if matches_mentioned_lawyer(giudice, original_message):
+            giudice = ''
+        if luogo_raw and (looks_like_lawyer(luogo_raw) or matches_mentioned_lawyer(luogo_raw, original_message)):
+            luogo = ''
+
         collegio_match = re.search(r'collegio\s+pres\.?\s+([A-Za-zÀ-ÿ\'’.-]+)', original_message, flags=re.IGNORECASE)
         if collegio_match:
             luogo = 'Collegio'
@@ -1164,11 +1266,18 @@ def validate_and_normalize_parsed_data(parsed_data: dict[str, Any], original_mes
             parte = extract_primary_party_candidate(original_message)
         if looks_like_lawyer(parte):
             parte = ''
+        if matches_mentioned_lawyer(parte, original_message) and re.match(r'\s*avv\.?\b', original_message, flags=re.IGNORECASE):
+            parte = ''
 
         if not parte and note:
             maybe_parte = re.split(r'[:\n,]', original_message or note, maxsplit=1)[0].strip()
             parte = normalize_whitespace(maybe_parte)
-        if looks_like_location(parte) or looks_like_reference(parte) or looks_like_lawyer(parte):
+        if (
+            looks_like_location(parte)
+            or looks_like_reference(parte)
+            or looks_like_lawyer(parte)
+            or (matches_mentioned_lawyer(parte, original_message) and re.match(r'\s*avv\.?\b', original_message, flags=re.IGNORECASE))
+        ):
             parte = ''
 
         if not parte or not data or not ora:
@@ -1368,6 +1477,10 @@ Linee guida:
 - Se il messaggio sembra una sentenza, riserva, trattenuta o nota procedurale, non inventare eventi.
 - Se hai dubbi reali, usa "conferma" invece di forzare un evento.
 - Usa anche l'analisi tecnica qui sotto come indizio, ma se il significato complessivo del messaggio suggerisce qualcosa di meglio, segui il significato.
+- I "segnali affidabili" sono un pavimento, non una gabbia: usali per non confondere date, ore, avvocati, giudici noti, luoghi e riferimenti di procedimento.
+- Se un nome compare dopo "avv." o nella lista avvocati/difensori, non usarlo come giudice o luogo; mettilo nelle note se utile.
+- Se un giudice noto compare vicino a "assenza giudice", "giudice assente" o "assente", tieni quel giudice nel campo giudice e metti l'assenza nelle note.
+- Se il primo candidato parte e' seguito da avvocato, giudice noto, data e ora, in genere il primo candidato resta la parte.
 
 Giudici noti utili:
 Carlomagno, Di Iorio, Farinella, Fuccio, Fuccio Sanza, Cardinali, Cirillo, Puliafito, Beccia, Mannara, De Santis, Sodani, Petrocelli, Ferrante, Filocamo, Ferretti, Sorrentino, Barzellotti, Palmaccio, Vigorito, Vitelli, Nardone, Ragusa, Cerasoli, Roda, Ciabattari, Lombardi, Russo, Maellaro, Nappi, Petti, Coniglio, Croci, Bocola, Ciampelli, Arcieri, Karpinska, GDP, GUP, GIP, GOT, Collegio, Collegio A, Collegio B, Collegio C, Corte d'Appello.
@@ -1428,6 +1541,9 @@ Messaggio normalizzato:
 
 Analisi tecnica preliminare:
 {json.dumps(analysis, ensure_ascii=False)}
+
+Segnali affidabili estratti localmente:
+{json.dumps(analysis.get('reliable_hints', {}), ensure_ascii=False)}
 
 Rispondi solo con JSON valido."""
 
