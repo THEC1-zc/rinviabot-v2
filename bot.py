@@ -16,6 +16,7 @@ from dateutil import parser
 import pytz
 import json
 import traceback
+import time
 from dotenv import load_dotenv
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -175,9 +176,9 @@ NON_HEARING_KEYWORDS = {
 HEARING_HINTS = {
     'rinvio', 'udienza', 'esame', 'testi', 'discussione', 'impedimento',
     'predib', 'dibattimento', 'stessi incombenti', 'incombenti', 'h ', 'ore ',
-    'alle ', 'al ', 'del '
+    'alle ', 'al ', 'del ', 'sospensione', 'proroga', 'differimento',
 }
-LOW_CONFIDENCE_THRESHOLD = 0.72
+LOW_CONFIDENCE_THRESHOLD = 0.65
 
 
 def ensure_runtime_directories() -> None:
@@ -478,18 +479,21 @@ def send_remote_log(payload: dict[str, Any]) -> None:
         with urllib_request.urlopen(req, timeout=2.0) as response:
             if response.status >= 400:
                 raise RuntimeError(f"Remote log endpoint returned status {response.status}")
-    except (urllib_error.URLError, RuntimeError, TimeoutError) as exc:
+    except Exception as exc:
         logger.warning(f"Remote logging failed: {exc}")
-        append_jsonl(PIPELINE_LOG_PATH, {
-            'ts': utc_now_iso(),
-            'trace_id': payload.get('trace_id', 'remote-log'),
-            'stage': 'remote_log_failed',
-            'data': {
-                'target': REMOTE_LOG_ENDPOINT,
-                'failed_stage': payload.get('stage'),
-                'error': str(exc),
-            },
-        })
+        try:
+            append_jsonl(PIPELINE_LOG_PATH, {
+                'ts': utc_now_iso(),
+                'trace_id': payload.get('trace_id', 'remote-log'),
+                'stage': 'remote_log_failed',
+                'data': {
+                    'target': REMOTE_LOG_ENDPOINT,
+                    'failed_stage': payload.get('stage'),
+                    'error': str(exc),
+                },
+            })
+        except Exception:
+            pass
 
 
 def log_pipeline_event(
@@ -885,10 +889,24 @@ def set_pending_clarification(
     parsed_data: dict[str, Any],
     reason: str,
     pending_type: str = 'generic_confirmation',
+    overwrite: bool = False,
 ) -> None:
     store = get_pending_store(context)
+    key = build_pending_key(chat_id, user_id)
+    # Non sovrascrivere un pending ancora attivo, a meno di richiesta esplicita.
+    # Questo evita che un secondo messaggio rapido cancelli il dubbio del primo.
+    if not overwrite:
+        existing = store.get(key)
+        if existing:
+            expires_at = existing.get('expires_at')
+            try:
+                if expires_at and datetime.fromisoformat(expires_at) > datetime.now(ROME_TZ):
+                    logger.info(f"set_pending_clarification: skip overwrite for key={key}, existing trace={existing.get('trace_id')}")
+                    return
+            except Exception:
+                pass
     now = datetime.now(ROME_TZ)
-    store[build_pending_key(chat_id, user_id)] = {
+    store[key] = {
         'trace_id': trace_id,
         'chat_id': chat_id,
         'user_id': user_id,
@@ -1322,6 +1340,18 @@ def should_require_confirmation(parsed_data: dict[str, Any], analysis: dict[str,
     normalized_message = normalize_message_text(original_message)
     lowered_message = normalized_message.lower()
 
+    # Fast-path: se parte+data+ora ci sono, confidence alta e nessun warning
+    # materiale -> crea direttamente senza chiedere conferma.
+    if (
+        isinstance(confidence, (int, float))
+        and confidence >= 0.80
+        and isinstance(eventi, list)
+        and eventi
+        and all(event_has_core_fields(e) for e in eventi)
+        and not any(warning_requires_confirmation(w) for w in (warnings if isinstance(warnings, list) else []))
+    ):
+        return None
+
     if not has_judicial_context(original_message):
         return "Il messaggio non sembra contenere elementi sufficientemente affidabili per un evento di udienza."
 
@@ -1567,14 +1597,26 @@ Rispondi solo con JSON valido."""
                 normalized_message=normalized_message,
             )
 
-        message = client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=1000,
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
-        )
-        
+        last_exc: Exception = RuntimeError("Anthropic API unreachable")
+        message = None
+        for _attempt in range(3):
+            try:
+                message = client.messages.create(
+                    model=ANTHROPIC_MODEL,
+                    max_tokens=1000,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                break
+            except Exception as _exc:
+                last_exc = _exc
+                logger.warning(f"Anthropic API attempt {_attempt + 1}/3 failed: {_exc}")
+                if _attempt < 2:
+                    time.sleep(2 ** _attempt)
+        if message is None:
+            raise last_exc
+
         response_text = message.content[0].text.strip()
         if trace_id:
             log_pipeline_event(
@@ -1817,11 +1859,23 @@ def parse_message_with_ai_rewrite(
                 followup_text=followup_text,
                 previous_parsed_data=previous_parsed_data,
             )
-        message = client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=1000,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        last_exc2: Exception = RuntimeError("Anthropic API unreachable")
+        message = None
+        for _attempt in range(3):
+            try:
+                message = client.messages.create(
+                    model=ANTHROPIC_MODEL,
+                    max_tokens=1000,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                break
+            except Exception as _exc:
+                last_exc2 = _exc
+                logger.warning(f"Anthropic API rewrite attempt {_attempt + 1}/3 failed: {_exc}")
+                if _attempt < 2:
+                    time.sleep(2 ** _attempt)
+        if message is None:
+            raise last_exc2
         response_text = message.content[0].text.strip()
         parsed_data = extract_json_object(response_text)
         if not parsed_data:
