@@ -560,11 +560,26 @@ def split_message_blocks(message_text: str) -> list[str]:
 
 
 def extract_dates_from_text(message_text: str) -> list[str]:
-    return re.findall(r'\b\d{1,2}[\/.\-]\d{1,2}(?:[\/.\-]\d{2,4})?\b', message_text or '')
+    return re.findall(
+        r'\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b|\b\d{1,2}\.\d{1,2}\.\d{2,4}\b',
+        message_text or '',
+    )
 
 
 def extract_times_from_text(message_text: str) -> list[str]:
-    return re.findall(r'(?:\bh\s*|\bore\s*|\balle\s*)?\d{1,2}(?::|[.,])\d{2}|\b(?:h\s*|ore\s*|alle\s*)\d{1,2}\b', message_text or '', flags=re.IGNORECASE)
+    text = message_text or ''
+    found: list[str] = []
+    pattern = r'(?:\bh\s*|\bore\s*|\balle\s*)?\d{1,2}(?::|[.,])\d{2}|\b(?:h\s*|ore\s*|alle\s*)\d{1,2}\b'
+    for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+        value = match.group(0)
+        has_time_prefix = bool(re.match(r'\s*(?:h|ore|alle)\b', value, flags=re.IGNORECASE))
+        if not has_time_prefix:
+            prev_char = text[match.start() - 1] if match.start() > 0 else ''
+            next_char = text[match.end()] if match.end() < len(text) else ''
+            if prev_char in './-' or next_char in './-':
+                continue
+        found.append(value)
+    return found
 
 
 def build_message_analysis(message_text: str) -> dict[str, Any]:
@@ -611,6 +626,16 @@ def extract_json_object(raw_text: str) -> Optional[dict[str, Any]]:
 
 def normalize_judge_name(value: str) -> str:
     raw = normalize_whitespace(value)
+    if not raw:
+        return ''
+
+    raw = normalize_whitespace(re.sub(
+        r'\b(?:assenza\s+giudice|giudice\s+assente|assente|ass\.?)\b',
+        '',
+        raw,
+        flags=re.IGNORECASE,
+    ))
+    raw = re.sub(r'^[\s:,-]+|[\s:,-]+$', '', raw).strip()
     if not raw:
         return ''
 
@@ -985,6 +1010,49 @@ def format_correction(correction: Any) -> Optional[str]:
     return f"   • {text}" if text else None
 
 
+def event_has_core_fields(evento: Any) -> bool:
+    if not isinstance(evento, dict):
+        return False
+    return bool(
+        normalize_whitespace(str(evento.get('parte', '') or ''))
+        and normalize_whitespace(str(evento.get('data', '') or ''))
+        and normalize_whitespace(str(evento.get('ora', '') or ''))
+    )
+
+
+def warning_requires_confirmation(warning: Any) -> bool:
+    text = normalize_whitespace(str(warning or '')).lower()
+    if not text:
+        return False
+
+    ignorable_patterns = [
+        r'\bgiudice\b.*\b(?:manca|mancante|non specificato|assente|vuoto)\b',
+        r'\b(?:manca|mancante|non specificato|assente|vuoto)\b.*\bgiudice\b',
+        r'\bluogo\b.*\b(?:manca|mancante|non specificato|default|civitavecchia)\b',
+        r'\btribunale\s+civitavecchia\b.*\bdefault\b',
+        r'\bcorrezion[ei]\b',
+        r'\btypo\b',
+    ]
+    if any(re.search(pattern, text) for pattern in ignorable_patterns):
+        return False
+
+    material_keywords = {
+        'ambigu', 'incert', 'non chiaro', 'non e chiaro', 'non è chiaro',
+        'più parti', 'piu parti', 'due parti', 'più date', 'piu date',
+        'più rinvii', 'piu rinvii', 'data', 'ora', 'parte', 'passato',
+        'rischio', 'contradd', 'incomplet',
+    }
+    return any(keyword in text for keyword in material_keywords)
+
+
+def warnings_require_confirmation(warnings: Any, eventi: Any) -> bool:
+    if not isinstance(warnings, list) or not warnings:
+        return False
+    if not isinstance(eventi, list) or not eventi or not all(event_has_core_fields(evento) for evento in eventi):
+        return True
+    return any(warning_requires_confirmation(warning) for warning in warnings)
+
+
 def normalize_event_date(date_value: str) -> Optional[str]:
     raw = normalize_whitespace(date_value)
     if not raw:
@@ -1148,10 +1216,14 @@ def should_require_confirmation(parsed_data: dict[str, Any], analysis: dict[str,
     if not has_judicial_context(original_message):
         return "Il messaggio non sembra contenere elementi sufficientemente affidabili per un evento di udienza."
 
-    if isinstance(confidence, (int, float)) and confidence < LOW_CONFIDENCE_THRESHOLD:
+    if (
+        isinstance(confidence, (int, float))
+        and confidence < LOW_CONFIDENCE_THRESHOLD
+        and not (confidence >= 0.60 and isinstance(eventi, list) and all(event_has_core_fields(evento) for evento in eventi))
+    ):
         return f"Confidenza troppo bassa ({confidence:.2f}) per creare l'evento in automatico."
 
-    if isinstance(warnings, list) and warnings:
+    if warnings_require_confirmation(warnings, eventi):
         return "Ho alcuni punti di incertezza che è meglio confermare prima della creazione."
 
     if analysis.get('block_count', 0) > 1 and len(eventi) != analysis.get('block_count'):
@@ -1285,6 +1357,11 @@ Linee guida:
 - "avv", "avv." e difensori nominati non sono il giudice.
 - Il giudice puo' essere noto oppure dedotto dal contesto; se manca davvero lascialo vuoto invece di inventarlo.
 - Se manca il giudice ma c'e' il tribunale, il tribunale va in luogo.
+- Se mancano giudice o luogo, ma parte, data e ora sono chiari, NON usare "conferma": crea il rinvio lasciando il campo vuoto o usando il luogo di default.
+- Non mettere warning per giudice mancante, luogo mancante/default, refusi corretti o note procedurali conservate.
+- Usa "conferma" solo se l'incertezza puo' creare un evento nel giorno/ora/parte sbagliati.
+- Se parte, data e ora sono chiari, usa confidence almeno 0.80 anche se mancano giudice, luogo o dettagli accessori.
+- "assenza giudice", "giudice assente" o "assente" indicano un rinvio per assenza del giudice: il nome del giudice resta quello indicato nel testo e l'assenza va nelle note.
 - Se ci sono separatori come "----" oppure più date chiaramente distinte, estrai più eventi.
 - Se una data manca dell'anno, inferiscilo in modo sensato.
 - Se un anno esplicito porta nel passato e sembra sospetto, usa "data_passata".
