@@ -15,8 +15,12 @@ import anthropic
 from dateutil import parser
 import pytz
 import json
+import traceback
+from dotenv import load_dotenv
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+
+load_dotenv()
 
 # Configurazione logging
 logging.basicConfig(
@@ -948,6 +952,39 @@ def build_mask_prompt_text(fields: dict[str, Any]) -> str:
     return '\n'.join(parts)
 
 
+def normalize_data_passata_options(opzioni: Any) -> list[dict[str, str]]:
+    if not isinstance(opzioni, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    for index, option in enumerate(opzioni):
+        fallback_id = chr(ord('a') + index)
+        if isinstance(option, dict):
+            option_id = normalize_whitespace(str(option.get('id') or fallback_id)).lower()
+            data = normalize_whitespace(str(option.get('data') or option.get('date') or ''))
+        else:
+            option_id = fallback_id
+            data = normalize_whitespace(str(option or ''))
+        if data:
+            normalized.append({'id': option_id[:1] or fallback_id, 'data': data})
+
+    return normalized
+
+
+def format_correction(correction: Any) -> Optional[str]:
+    if isinstance(correction, dict):
+        campo = normalize_whitespace(str(correction.get('campo', '') or 'campo'))
+        da = normalize_whitespace(str(correction.get('da', '') or ''))
+        a = normalize_whitespace(str(correction.get('a', '') or ''))
+        if da or a:
+            return f"   • {campo}: '{da}' -> '{a}'"
+        descrizione = normalize_whitespace(str(correction.get('descrizione', '') or correction.get('description', '') or ''))
+        return f"   • {descrizione}" if descrizione else None
+
+    text = normalize_whitespace(str(correction or ''))
+    return f"   • {text}" if text else None
+
+
 def normalize_event_date(date_value: str) -> Optional[str]:
     raw = normalize_whitespace(date_value)
     if not raw:
@@ -1015,9 +1052,9 @@ def validate_and_normalize_parsed_data(parsed_data: dict[str, Any], original_mes
         return normalized
 
     if tipo == 'data_passata':
-        opzioni = parsed_data.get('opzioni', [])
+        opzioni = normalize_data_passata_options(parsed_data.get('opzioni', []))
         normalized['data_letta'] = normalize_whitespace(str(parsed_data.get('data_letta', '')))
-        normalized['opzioni'] = opzioni if isinstance(opzioni, list) else []
+        normalized['opzioni'] = opzioni
         normalized['domanda'] = normalize_whitespace(str(parsed_data.get('domanda', 'La data è nel passato. Quale intendevi?')))
         return normalized
 
@@ -1892,9 +1929,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = f"❌ Data nel passato\n\n"
         msg += f"📅 Ho letto: {data_letta}\n\n"
         msg += f"💡 Intendevi:\n"
-        for opt in opzioni:
-            msg += f"   {opt['id'].upper()}) {opt['data']}\n"
-        msg += f"\n💬 Rispondi con 'a' o 'b'"
+        if opzioni:
+            for opt in opzioni:
+                msg += f"   {opt.get('id', '?').upper()}) {opt.get('data', '')}\n"
+            msg += f"\n💬 Rispondi con una delle opzioni indicate"
+        else:
+            msg += "   Non ho ricevuto opzioni affidabili.\n"
+            msg += "\n💬 Riscrivi il messaggio indicando la data completa."
         
         await reply_and_log(update, trace_id, msg, 'data_passata', tipo=tipo, data_letta=data_letta, opzioni=opzioni)
         return
@@ -1918,8 +1959,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if correzioni:
             msg_corr = "🔧 Correzioni automatiche:\n"
             for c in correzioni:
-                msg_corr += f"   • {c.get('campo', '')}: '{c.get('da', '')}' → '{c.get('a', '')}'\n"
-            risposte.append(msg_corr)
+                formatted = format_correction(c)
+                if formatted:
+                    msg_corr += formatted + "\n"
+            if msg_corr.strip() != "🔧 Correzioni automatiche:":
+                risposte.append(msg_corr)
         
         # Crea ogni evento
         for i, evento in enumerate(eventi, 1):
@@ -1973,13 +2017,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gestisce errori"""
-    logger.error(f"Errore: {context.error}")
+    exc_info = (
+        (type(context.error), context.error, context.error.__traceback__)
+        if context.error
+        else None
+    )
+    logger.error("Errore non gestito durante l'elaborazione Telegram", exc_info=exc_info)
     trace_id = build_trace_id(update)
+    error_traceback = ''.join(
+        traceback.format_exception(type(context.error), context.error, context.error.__traceback__)
+    ) if context.error else ''
     log_pipeline_event(
         'pipeline_failed',
         trace_id,
         failed_stage='error_handler',
         error=str(context.error),
+        traceback=error_traceback[-4000:],
     )
     if update and update.message:
         await update.message.reply_text("❌ Si è verificato un errore. Riprova.")
