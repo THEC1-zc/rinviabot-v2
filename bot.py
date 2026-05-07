@@ -1160,12 +1160,50 @@ def warnings_require_confirmation(warnings: Any, eventi: Any) -> bool:
     return any(warning_requires_confirmation(warning) for warning in warnings)
 
 
+# Mappa nomi giorno IT -> offset rispetto ad oggi
+_IT_WEEKDAY = {
+    'lunedi': 0, 'lunedì': 0, 'lun': 0,
+    'martedi': 1, 'martedì': 1, 'mar': 1,
+    'mercoledi': 2, 'mercoledì': 2, 'mer': 2,
+    'giovedi': 3, 'giovedì': 3, 'gio': 3,
+    'venerdi': 4, 'venerdì': 4, 'ven': 4,
+    'sabato': 5, 'sab': 5,
+    'domenica': 6, 'dom': 6,
+    'domani': None,  # gestito separatamente
+    'oggi': None,
+}
+
+def _resolve_relative_date(raw: str) -> Optional[str]:
+    """Risolve nomi di giorno e parole relative in date assolute."""
+    lowered = raw.strip().lower()
+    today = datetime.now(ROME_TZ).date()
+    if lowered == 'oggi':
+        return today.strftime('%d/%m/%Y')
+    if lowered == 'domani':
+        from datetime import timedelta as _td
+        return (today + _td(days=1)).strftime('%d/%m/%Y')
+    if lowered in _IT_WEEKDAY:
+        target_wd = _IT_WEEKDAY[lowered]
+        if target_wd is None:
+            return None
+        days_ahead = (target_wd - today.weekday()) % 7
+        if days_ahead == 0:
+            days_ahead = 7  # prossima settimana se è già oggi
+        from datetime import timedelta as _td
+        return (today + _td(days=days_ahead)).strftime('%d/%m/%Y')
+    return None
+
 def normalize_event_date(date_value: str) -> Optional[str]:
     raw = normalize_whitespace(date_value)
     if not raw:
         return None
     if re.fullmatch(r'\d{1,2}\.\d{1,2}\.\d{2,4}', raw):
         raw = raw.replace('.', '/')
+
+    # Prova prima risoluzione relativa (lunedì, domani, ecc.)
+    relative = _resolve_relative_date(raw)
+    if relative:
+        return relative
 
     try:
         dt = parser.parse(raw, dayfirst=True, default=datetime.now(ROME_TZ).replace(hour=9, minute=0, second=0, microsecond=0))
@@ -1282,7 +1320,15 @@ def validate_and_normalize_parsed_data(parsed_data: dict[str, Any], original_mes
 
         if looks_like_location(parte) or looks_like_reference(parte):
             parte = extract_primary_party_candidate(original_message)
-        if looks_like_lawyer(parte):
+        # Non azzerare la parte se è un cognome noto come avvocato MA è chiaramente
+        # usato come parte (es. "Bruni Carlotta" — nome proprio dopo il cognome).
+        # Azzerare solo se nel testo c'è esplicitamente "avv." prima del nome.
+        _parte_lower = parte.lower()
+        _has_avv_prefix = bool(re.search(
+            r'\bavv\.?\s+' + re.escape(_parte_lower.split()[0] if _parte_lower.split() else _parte_lower),
+            original_message.lower()
+        ))
+        if looks_like_lawyer(parte) and _has_avv_prefix:
             parte = ''
         if matches_mentioned_lawyer(parte, original_message) and re.match(r'\s*avv\.?\b', original_message, flags=re.IGNORECASE):
             parte = ''
