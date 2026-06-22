@@ -1877,6 +1877,57 @@ def create_all_day_calendar_event(title: str, event_date: datetime, trace_id: Op
         return None, 'error'
 
 
+def delete_all_day_calendar_event(title: str, event_date: datetime, trace_id: Optional[str] = None):
+    """Elimina gli eventi all-day con titolo e data esatti."""
+    try:
+        service = get_google_calendar_service()
+        if not service:
+            return 0, 'error'
+
+        date_value = event_date.date()
+        next_date_value = date_value + timedelta(days=1)
+        existing = service.events().list(
+            calendarId=GOOGLE_CALENDAR_ID,
+            timeMin=f"{date_value.isoformat()}T00:00:00+02:00",
+            timeMax=f"{next_date_value.isoformat()}T00:00:00+02:00",
+            singleEvents=True,
+        ).execute()
+        matches = [
+            item for item in existing.get('items', [])
+            if item.get('summary') == title
+            and item.get('start', {}).get('date') == date_value.isoformat()
+        ]
+        for item in matches:
+            service.events().delete(
+                calendarId=GOOGLE_CALENDAR_ID,
+                eventId=item['id'],
+            ).execute()
+        if trace_id:
+            log_pipeline_event(
+                'calendar_all_day_event_deleted',
+                trace_id,
+                success=True,
+                calendar_id=GOOGLE_CALENDAR_ID,
+                title=title,
+                date=date_value.isoformat(),
+                deleted_count=len(matches),
+            )
+        return len(matches), 'deleted'
+    except Exception as e:
+        logger.error(f"Errore eliminazione evento giornaliero: {e}")
+        if trace_id:
+            log_pipeline_event(
+                'calendar_all_day_event_deleted',
+                trace_id,
+                success=False,
+                calendar_id=GOOGLE_CALENDAR_ID,
+                title=title,
+                date=event_date.date().isoformat(),
+                error=str(e),
+            )
+        return 0, 'error'
+
+
 async def handle_turni(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Crea in blocco eventi tutto il giorno: /turni Titolo: gg/mm/aaaa, ..."""
     trace_id = build_trace_id(update)
@@ -1941,6 +1992,71 @@ async def handle_turni(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         'turni_created',
         created_count=created_count,
         existing_count=existing_count,
+        error_count=len(errors),
+    )
+
+
+async def handle_turni_rimuovi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Rimuove eventi all-day: /turni_rimuovi Titolo: gg/mm/aaaa, ..."""
+    trace_id = build_trace_id(update)
+    message_text = update.effective_message.text if update.effective_message else ''
+    payload = re.sub(
+        r'^/turni_rimuovi(?:@\w+)?\s*',
+        '',
+        message_text,
+        count=1,
+        flags=re.IGNORECASE,
+    ).strip()
+    batches = []
+    for line in payload.splitlines():
+        line = line.strip()
+        if not line or ':' not in line:
+            continue
+        title, raw_dates = line.split(':', 1)
+        title = normalize_whitespace(title)
+        dates = re.findall(r'\b\d{1,2}/\d{1,2}/\d{4}\b', raw_dates)
+        if title and dates:
+            batches.append((title, dates))
+
+    if not batches:
+        await reply_and_log(
+            update,
+            trace_id,
+            "Formato: /turni_rimuovi Titolo: 03/07/2026, 18/07/2026",
+            'turni_remove_usage',
+        )
+        return
+
+    deleted_count = 0
+    missing_count = 0
+    errors = []
+    for title, dates in batches:
+        for date_text in dates:
+            try:
+                event_date = datetime.strptime(date_text, '%d/%m/%Y')
+            except ValueError:
+                errors.append(f"{title} — {date_text}")
+                continue
+            count, status = delete_all_day_calendar_event(title, event_date, trace_id=trace_id)
+            if status == 'error':
+                errors.append(f"{title} — {date_text}")
+            elif count:
+                deleted_count += count
+            else:
+                missing_count += 1
+
+    response = f"✅ Turni rimossi: {deleted_count}"
+    if missing_count:
+        response += f", {missing_count} non presenti"
+    if errors:
+        response += "\n⚠️ Errori:\n" + "\n".join(f"• {item}" for item in errors)
+    await reply_and_log(
+        update,
+        trace_id,
+        response,
+        'turni_removed',
+        deleted_count=deleted_count,
+        missing_count=missing_count,
         error_count=len(errors),
     )
 
@@ -2701,6 +2817,7 @@ def main():
     
     application.add_handler(CommandHandler('1', handle_mask_start))
     application.add_handler(CommandHandler('turni', handle_turni))
+    application.add_handler(CommandHandler('turni_rimuovi', handle_turni_rimuovi))
     application.add_handler(CommandHandler('export_chat', handle_export_chat))
     application.add_handler(CallbackQueryHandler(handle_mask_callback, pattern=r'^mask:'))
     application.add_handler(CallbackQueryHandler(handle_clarification_callback, pattern=r'^clarify:'))
