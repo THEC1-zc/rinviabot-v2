@@ -1821,6 +1821,130 @@ def create_google_calendar_event(event_data, trace_id: Optional[str] = None):
         return None
 
 
+def create_all_day_calendar_event(title: str, event_date: datetime, trace_id: Optional[str] = None):
+    """Crea un evento di tutto il giorno, evitando duplicati con stesso titolo e data."""
+    try:
+        service = get_google_calendar_service()
+        if not service:
+            return None, 'error'
+
+        date_value = event_date.date()
+        next_date_value = date_value + timedelta(days=1)
+        existing = service.events().list(
+            calendarId=GOOGLE_CALENDAR_ID,
+            timeMin=f"{date_value.isoformat()}T00:00:00+02:00",
+            timeMax=f"{next_date_value.isoformat()}T00:00:00+02:00",
+            singleEvents=True,
+        ).execute()
+        for item in existing.get('items', []):
+            if item.get('summary') == title and item.get('start', {}).get('date') == date_value.isoformat():
+                return item, 'existing'
+
+        event = {
+            'summary': title,
+            'start': {'date': date_value.isoformat()},
+            'end': {'date': next_date_value.isoformat()},
+            'reminders': {'useDefault': False, 'overrides': []},
+        }
+        created = service.events().insert(
+            calendarId=GOOGLE_CALENDAR_ID,
+            body=event,
+        ).execute()
+        if trace_id:
+            log_pipeline_event(
+                'calendar_all_day_event_created',
+                trace_id,
+                success=True,
+                calendar_id=GOOGLE_CALENDAR_ID,
+                event_id=created.get('id'),
+                html_link=created.get('htmlLink'),
+                title=title,
+                date=date_value.isoformat(),
+            )
+        return created, 'created'
+    except Exception as e:
+        logger.error(f"Errore creazione evento giornaliero: {e}")
+        if trace_id:
+            log_pipeline_event(
+                'calendar_all_day_event_created',
+                trace_id,
+                success=False,
+                calendar_id=GOOGLE_CALENDAR_ID,
+                title=title,
+                date=event_date.date().isoformat(),
+                error=str(e),
+            )
+        return None, 'error'
+
+
+async def handle_turni(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Crea in blocco eventi tutto il giorno: /turni Titolo: gg/mm/aaaa, ..."""
+    trace_id = build_trace_id(update)
+    message_text = update.effective_message.text if update.effective_message else ''
+    payload = re.sub(r'^/turni(?:@\w+)?\s*', '', message_text, count=1, flags=re.IGNORECASE).strip()
+    if not payload:
+        await reply_and_log(
+            update,
+            trace_id,
+            "Formato: /turni Titolo: 03/07/2026, 18/07/2026",
+            'turni_usage',
+        )
+        return
+
+    batches = []
+    for line in payload.splitlines():
+        line = line.strip()
+        if not line or ':' not in line:
+            continue
+        title, raw_dates = line.split(':', 1)
+        title = normalize_whitespace(title)
+        dates = re.findall(r'\b\d{1,2}/\d{1,2}/\d{4}\b', raw_dates)
+        if title and dates:
+            batches.append((title, dates))
+
+    if not batches:
+        await reply_and_log(
+            update,
+            trace_id,
+            "⚠️ Non trovo righe nel formato “Titolo: gg/mm/aaaa, ...”.",
+            'turni_invalid',
+        )
+        return
+
+    created_count = 0
+    existing_count = 0
+    errors = []
+    for title, dates in batches:
+        for date_text in dates:
+            try:
+                event_date = datetime.strptime(date_text, '%d/%m/%Y')
+            except ValueError:
+                errors.append(f"{title} — {date_text}")
+                continue
+            _, status = create_all_day_calendar_event(title, event_date, trace_id=trace_id)
+            if status == 'created':
+                created_count += 1
+            elif status == 'existing':
+                existing_count += 1
+            else:
+                errors.append(f"{title} — {date_text}")
+
+    response = f"✅ Turni elaborati: {created_count} creati"
+    if existing_count:
+        response += f", {existing_count} già presenti"
+    if errors:
+        response += "\n⚠️ Errori:\n" + "\n".join(f"• {item}" for item in errors)
+    await reply_and_log(
+        update,
+        trace_id,
+        response,
+        'turni_created',
+        created_count=created_count,
+        existing_count=existing_count,
+        error_count=len(errors),
+    )
+
+
 async def reply_and_log(update: Update, trace_id: str, reply_text: str, reply_category: str, **extra: Any) -> None:
     await update.message.reply_text(reply_text, reply_markup=build_persistent_keyboard())
     log_pipeline_event(
@@ -2576,6 +2700,7 @@ def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     application.add_handler(CommandHandler('1', handle_mask_start))
+    application.add_handler(CommandHandler('turni', handle_turni))
     application.add_handler(CommandHandler('export_chat', handle_export_chat))
     application.add_handler(CallbackQueryHandler(handle_mask_callback, pattern=r'^mask:'))
     application.add_handler(CallbackQueryHandler(handle_clarification_callback, pattern=r'^clarify:'))
