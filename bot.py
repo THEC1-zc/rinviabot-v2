@@ -89,6 +89,14 @@ KNOWN_JUDGES = {
     'ciampelli': 'Ciampelli',
     'arcieri': 'Arcieri',
     'karpinska': 'Karpinska',
+    'ferla': 'Ferla',
+    'nigro imperiale': 'Nigro Imperiale',
+    'caprio': 'Caprio',
+    'del vecchio': 'Del Vecchio',
+    'canepa': 'Canepa',
+    'pignotti': 'Pignotti',
+    'aldi': 'Aldi',
+    'maglione': 'Maglione',
     'gdp': 'GDP',
     'gup': 'GUP',
     'gip': 'GIP',
@@ -1559,7 +1567,7 @@ Linee guida:
 - Se il primo candidato parte e' seguito da avvocato, giudice noto, data e ora, in genere il primo candidato resta la parte.
 
 Giudici noti utili:
-Carlomagno, Di Iorio, Farinella, Fuccio, Fuccio Sanza, Cardinali, Cirillo, Puliafito, Beccia, Mannara, De Santis, Sodani, Petrocelli, Ferrante, Filocamo, Ferretti, Sorrentino, Barzellotti, Palmaccio, Vigorito, Vitelli, Nardone, Ragusa, Cerasoli, Roda, Ciabattari, Lombardi, Russo, Maellaro, Nappi, Petti, Coniglio, Croci, Bocola, Ciampelli, Arcieri, Karpinska, GDP, GUP, GIP, GOT, Collegio, Collegio A, Collegio B, Collegio C, Corte d'Appello.
+Carlomagno, Di Iorio, Farinella, Fuccio, Fuccio Sanza, Cardinali, Cirillo, Puliafito, Beccia, Mannara, De Santis, Sodani, Petrocelli, Ferrante, Filocamo, Ferretti, Sorrentino, Barzellotti, Palmaccio, Vigorito, Vitelli, Nardone, Ragusa, Cerasoli, Roda, Ciabattari, Lombardi, Russo, Maellaro, Nappi, Petti, Coniglio, Croci, Bocola, Ciampelli, Arcieri, Karpinska, Ferla, Nigro Imperiale, Caprio, Del Vecchio, Canepa, Pignotti, Aldi, Maglione, GDP, GUP, GIP, GOT, Collegio, Collegio A, Collegio B, Collegio C, Corte d'Appello.
 
 Correzioni typo frequenti dei giudici:
 Farinela->Farinella, Sodanoi->Sodani, Fuccuo->Fuccio, Petrucelli->Petrocelli, Di Ioro->Di Iorio, Puliafitto->Puliafito, Maelaro->Maellaro.
