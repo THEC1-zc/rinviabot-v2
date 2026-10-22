@@ -1,5 +1,7 @@
 # RinviaBot v2 🤖⚖️
 
+> **Produzione dal 22 ottobre 2026:** Rinviabot gira sulla VPS IONOS in polling, con lo stesso bot e calendario. Render è sospeso. Configurazione, controlli e rollback: [deploy/ionos/README.md](deploy/ionos/README.md). Le istruzioni Render seguenti sono storiche.
+
 Bot Telegram con AI intelligente per automatizzare la gestione dei rinvii delle udienze.
 
 ## 🎯 Cosa fa

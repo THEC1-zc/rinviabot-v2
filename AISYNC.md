@@ -15,16 +15,25 @@ Shared sync log for all AI agents working on WORKDB and RinviaBot v3.
    - touched files list
 4. Cross-repo sync is mandatory:
    - update `/Users/fabio/workspace/WORKDB/WORKDB/AISYNC.md`
-   - update `/Users/fabio/Documents/New project/rinviabot v3/AISYNC.md`
+   - update this repository’s root `AISYNC.md`; the old Documents path is obsolete
 5. Latest entry must be on top.
 
 ## Current build
 
-- Build: `0.4.12`
-- Updated at: `2026-03-20`
+- Build: `0.4.13`
+- Updated at: `2026-10-22`
 - Updated by: `Codex`
 
 ## Changelog (newest first)
+
+### 0.4.13 - 2026-10-22 - Codex
+- Migrated the existing Telegram bot and Google Calendar configuration from Render to isolated IONOS service `rinviabot.service`; Render suspended and retained for rollback.
+- Added encrypted systemd credential launcher, resource limits, provider health, synthetic calendar preflight and logger probe.
+- Fixed logging User-Agent and deployment source metadata; corrected malformed logger URL and mismatched logger token in private runtime configuration.
+- Verified live Telegram input/replies, Claude extraction, calendar event read/write and synthetic cleanup, remote logger DB write, automatic service startup, and unchanged persistent QWE/STUDIO process IDs.
+- Saved original Render export and corrected IONOS JSON in the central vault; no customer data or credentials added here.
+- Files: `bot.py`, `README.md`, `AISYNC.md`, `deploy/ionos/launch.py`, `deploy/ionos/rinviabot.service`, `deploy/ionos/preflight.py`, `deploy/ionos/health.py`, `deploy/ionos/logging_probe.py`, `deploy/ionos/README.md`.
+- Reusable operations skill: `/Users/fabio/.codex/skills/rinviabot-ionos/SKILL.md`; evidence and actual limitations in `deploy/ionos/README.md`.
 
 ### 0.4.12 - 2026-03-20 - Codex
 - Consolidated the repository to a single root-level bot structure for clearer local and remote workflows.

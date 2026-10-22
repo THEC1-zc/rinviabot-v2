@@ -478,6 +478,7 @@ def send_remote_log(payload: dict[str, Any]) -> None:
         data=json.dumps(safe_json_value(payload), ensure_ascii=False).encode('utf-8'),
         headers={
             'Content-Type': 'application/json',
+            'User-Agent': 'Rinviabot/1.0',
             'Authorization': f'Bearer {REMOTE_LOG_TOKEN}',
         },
         method='POST',
@@ -513,7 +514,7 @@ def log_pipeline_event(
     user_id: Any = None,
     username: Any = None,
     text: Optional[str] = None,
-    source: str = 'rinviabot-render',
+    source: str = os.getenv('RINVIABOT_SOURCE', 'rinviabot-render'),
     **data: Any,
 ) -> None:
     payload = {
