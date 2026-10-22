@@ -10,7 +10,11 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 config = configure()
-result = {'at': datetime.now(timezone.utc).isoformat()}
+result = {'at': datetime.now(timezone.utc).isoformat(),
+          'llm_chain': ['codex:gpt-6.1-sol:low','argon:gemini-4-argon-low','claude_api:'+config.get('ANTHROPIC_MODEL','')],
+          'llm_live_probe': False}
+import subprocess
+result['codex_cli'] = subprocess.check_output(['/opt/rinviabot/toolchain/node_modules/.bin/codex','--version'], text=True).strip()
 
 async def main():
     async with Bot(config['TELEGRAM_BOT_TOKEN']) as bot:

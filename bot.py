@@ -17,6 +17,11 @@ import pytz
 import json
 import traceback
 import time
+import asyncio
+from conversations import ConversationStore
+from calendar_write import insert_verified
+from reference_data import KNOWN_JUDGES, JUDGE_TYPO_MAP, KNOWN_LAWYERS, PROSECUTOR_SURNAMES
+from llm_runtime import complete_json
 from dotenv import load_dotenv
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -45,87 +50,14 @@ REMOTE_LOG_TOKEN = os.getenv('REMOTE_LOG_TOKEN', '').strip()
 ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-3-5-haiku-latest').strip()
 
 # Client Anthropic
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=0, timeout=35) if ANTHROPIC_API_KEY else None
 
 # Google Calendar scopes
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 ROME_TZ = pytz.timezone('Europe/Rome')
 
-KNOWN_JUDGES = {
-    'carlomagno': 'Carlomagno',
-    'di iorio': 'Di Iorio',
-    'farinella': 'Farinella',
-    'fuccio': 'Fuccio',
-    'fuccio sanza': 'Fuccio Sanza',
-    'cardinali': 'Cardinali',
-    'cirillo': 'Cirillo',
-    'puliafito': 'Puliafito',
-    'beccia': 'Beccia',
-    'mannara': 'Mannara',
-    'de santis': 'De Santis',
-    'sodani': 'Sodani',
-    'petrocelli': 'Petrocelli',
-    'ferrante': 'Ferrante',
-    'filocamo': 'Filocamo',
-    'ferretti': 'Ferretti',
-    'sorrentino': 'Sorrentino',
-    'barzellotti': 'Barzellotti',
-    'palmaccio': 'Palmaccio',
-    'vigorito': 'Vigorito',
-    'vitelli': 'Vitelli',
-    'nardone': 'Nardone',
-    'ragusa': 'Ragusa',
-    'cerasoli': 'Cerasoli',
-    'roda': 'Roda',
-    'ciabattari': 'Ciabattari',
-    'lombardi': 'Lombardi',
-    'russo': 'Russo',
-    'maellaro': 'Maellaro',
-    'nappi': 'Nappi',
-    'petti': 'Petti',
-    'coniglio': 'Coniglio',
-    'croci': 'Croci',
-    'bocola': 'Bocola',
-    'ciampelli': 'Ciampelli',
-    'arcieri': 'Arcieri',
-    'karpinska': 'Karpinska',
-    'ferla': 'Ferla',
-    'nigro imperiale': 'Nigro Imperiale',
-    'caprio': 'Caprio',
-    'del vecchio': 'Del Vecchio',
-    'canepa': 'Canepa',
-    'pignotti': 'Pignotti',
-    'aldi': 'Aldi',
-    'maglione': 'Maglione',
-    'gdp': 'GDP',
-    'gup': 'GUP',
-    'gip': 'GIP',
-    'got': 'GOT',
-    'collegio': 'Collegio',
-    'collegio a': 'Collegio A',
-    'collegio b': 'Collegio B',
-    'collegio c': 'Collegio C',
-    "corte d'appello": "Corte d'Appello",
-}
 
-JUDGE_TYPO_MAP = {
-    'farinela': 'Farinella',
-    'sodanoi': 'Sodani',
-    'fuccuo': 'Fuccio',
-    'petrucelli': 'Petrocelli',
-    'di ioro': 'Di Iorio',
-    'puliafitto': 'Puliafito',
-    'maelaro': 'Maellaro',
-}
 
-KNOWN_LAWYERS = {
-    'frattasi', 'd’angerio', "d'angerio", 'righetti', 'fabio viscarelli',
-    'saginario mirko', 'messina', 'burgada', 'candeloro', 'monteleone',
-    'moffa', 'bruni', 'corazzelli', 'fortino', 'poddesu', 'crescioni',
-    'pecchi', 'mottola', 'vincenzo corazzelli', 'michele petracca',
-    'catanzaro', 'alimonti', 'lattanzi', 'esposito', 'archilei',
-    'bolognesi', 'anzi', 'albertario'
-}
 
 COURT_LOCATION_KEYWORDS = {
     'tribunale', "corte d'appello", 'corte di appello', 'corte appello',
@@ -880,85 +812,178 @@ def normalize_event_notes(note_value: str, original_message: str) -> str:
     return ' | '.join(extras)
 
 
-def get_pending_store(context: ContextTypes.DEFAULT_TYPE) -> dict[str, dict[str, Any]]:
-    return context.bot_data.setdefault('pending_clarifications', {})
+def dialog_store(context):
+    if '_conversation_store' not in context.bot_data:
+        root = Path(os.getenv('RINVIABOT_STATE_DIR', str(Path.home() / '.local/state/rinviabot')))
+        context.bot_data['_conversation_store'] = ConversationStore(root / 'conversations.sqlite3')
+    return context.bot_data['_conversation_store']
 
 
-def build_pending_key(chat_id: Any, user_id: Any) -> str:
-    return f"{chat_id}:{user_id}"
+def build_pending_key(chat_id, user_id):
+    return f'{chat_id}:{user_id}'
 
 
-def set_pending_clarification(
-    context: ContextTypes.DEFAULT_TYPE,
-    *,
-    trace_id: str,
-    chat_id: Any,
-    user_id: Any,
-    original_message: str,
-    parsed_data: dict[str, Any],
-    reason: str,
-    pending_type: str = 'generic_confirmation',
-    overwrite: bool = False,
-) -> None:
-    store = get_pending_store(context)
-    key = build_pending_key(chat_id, user_id)
-    # Non sovrascrivere un pending ancora attivo, a meno di richiesta esplicita.
-    # Questo evita che un secondo messaggio rapido cancelli il dubbio del primo.
-    if not overwrite:
-        existing = store.get(key)
-        if existing:
-            expires_at = existing.get('expires_at')
-            try:
-                if expires_at and datetime.fromisoformat(expires_at) > datetime.now(ROME_TZ):
-                    logger.info(f"set_pending_clarification: skip overwrite for key={key}, existing trace={existing.get('trace_id')}")
-                    return
-            except Exception:
-                pass
-    now = datetime.now(ROME_TZ)
-    store[key] = {
-        'trace_id': trace_id,
-        'chat_id': chat_id,
-        'user_id': user_id,
-        'original_message': original_message,
-        'parsed_data': safe_json_value(parsed_data),
-        'reason': reason,
-        'pending_type': pending_type,
-        'created_at': now.isoformat(),
-        'expires_at': (now + timedelta(hours=PENDING_EXPIRY_HOURS)).isoformat(),
-        'mode': 'awaiting_action',
-    }
+def candidate_events(parsed):
+    events = parsed.get('eventi')
+    if isinstance(events, list) and events:
+        return [dict(e) for e in events if isinstance(e, dict)]
+    interpretation = parsed.get('interpretazione')
+    if isinstance(interpretation, dict) and any(interpretation.get(k) for k in ('parte','data','ora','giudice')):
+        return [{k: interpretation.get(k, '') for k in ('parte','giudice','luogo','data','ora','note')}]
+    return []
 
 
-def get_pending_clarification(context: ContextTypes.DEFAULT_TYPE, chat_id: Any, user_id: Any) -> Optional[dict[str, Any]]:
-    store = get_pending_store(context)
-    pending = store.get(build_pending_key(chat_id, user_id))
-    if not pending:
-        return None
-    expires_at = pending.get('expires_at')
-    if expires_at:
-        try:
-            if datetime.fromisoformat(expires_at) < datetime.now(ROME_TZ):
-                store.pop(build_pending_key(chat_id, user_id), None)
-                return None
-        except Exception:
-            pass
-    return pending
+def set_pending_clarification(context, *, trace_id, chat_id, user_id, original_message,
+                              parsed_data, reason, pending_type='generic_confirmation', overwrite=False):
+    parsed_data = dict(parsed_data)
+    parsed_data['eventi'] = candidate_events(parsed_data)
+    for event in parsed_data['eventi']:
+        event['note'] = normalize_event_notes(str(event.get('note') or ''), original_message)
+    value = {'trace_id': trace_id, 'chat_id': chat_id, 'user_id': user_id,
+             'original_message': original_message, 'parsed_data': safe_json_value(parsed_data),
+             'reason': reason, 'pending_type': pending_type,
+             'created_at': datetime.now(ROME_TZ).isoformat(), 'mode': 'awaiting_action',
+             'history': [{'role':'user','text':original_message}]}
+    # Incoming messages on an active thread are handled as followups, never overwrite it.
+    existing = get_pending_clarification(context, chat_id, user_id)
+    if existing and not overwrite:
+        raise ValueError('active_conversation_must_be_continued')
+    dialog_store(context).save(value)
+    return value
 
 
-def clear_pending_clarification(context: ContextTypes.DEFAULT_TYPE, chat_id: Any, user_id: Any) -> None:
-    get_pending_store(context).pop(build_pending_key(chat_id, user_id), None)
+def get_pending_clarification(context, chat_id, user_id):
+    return dialog_store(context).get(chat_id, user_id)
 
 
-def build_confirmation_keyboard() -> InlineKeyboardMarkup:
+def clear_pending_clarification(context, chat_id, user_id):
+    dialog_store(context).close(chat_id, user_id)
+
+
+def build_confirmation_keyboard(pending):
+    token = f"{pending['_id']}:{pending['_rev']}"
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Conferma", callback_data='clarify:confirm'),
-            InlineKeyboardButton("🔁 Riscrivi", callback_data='clarify:rewrite'),
-        ],
-        [
-            InlineKeyboardButton("❌ Non creare", callback_data='clarify:cancel'),
-        ],
-    ])
+        [InlineKeyboardButton('✅ Conferma', callback_data='clarify:confirm:'+token),
+         InlineKeyboardButton('💬 Chiarisci', callback_data='clarify:rewrite:'+token)],
+        [InlineKeyboardButton('❌ Annulla', callback_data='clarify:cancel:'+token)]])
+
+
+def render_dialog(pending):
+    parsed = pending.get('parsed_data') or {}
+    rows = ['💬 '+(parsed.get('domanda') or pending.get('reason') or 'Confermi questi dati?')]
+    for index, event in enumerate(candidate_events(parsed), 1):
+        rows.append(f"\n{index}. {str(event.get('parte') or 'Parte da chiarire')[:100]}\n"
+                    f"📅 {event.get('data') or 'Data da chiarire'} · {event.get('ora') or 'Ora da chiarire'}\n"
+                    f"⚖️ {str(event.get('giudice') or 'Giudice non indicato')[:100]}\n"
+                    f"📍 {str(event.get('luogo') or 'Luogo non indicato')[:100]}")
+    for option in parsed.get('opzioni', []):
+        if isinstance(option, dict): rows.append(f"{option.get('id','')}) {option.get('data','')}")
+    rows.append('\nPuoi rispondere qui per correggere un dato o approfondire. Scrivi «confermo» solo quando è tutto corretto. /nuovo apre un altro messaggio; /dubbi riprende quelli sospesi.')
+    result = '\n'.join(rows)
+    if len(result) > 3900:
+        return 'Il riepilogo contiene troppi dati: usa /nuovo e separa il messaggio in gruppi più piccoli. Questo dubbio resta salvato.'
+    return result
+
+
+async def show_dialog(update, context, pending):
+    text = render_dialog(pending)
+    pending.setdefault('history', []).append({'role':'assistant','text':text})
+    dialog_store(context).save(pending)
+    await update.effective_message.reply_text(text, reply_markup=build_confirmation_keyboard(pending))
+
+
+async def confirm_dialog(update, context, pending):
+    events = candidate_events(pending.get('parsed_data') or {})
+    if not events or not all(event_has_core_fields(e) and format_calendar_event(e) for e in events):
+        pending['reason'] = 'Mancano parte, data o ora certe. Indicami il dato mancante prima della conferma.'
+        pending['parsed_data']['domanda'] = pending['reason']
+        await show_dialog(update, context, pending)
+        return
+    if len(render_dialog(pending)) > 3800 or len(events) > 10:
+        await update.effective_message.reply_text('Prima della conferma serve un riepilogo completo: separa le udienze in messaggi più piccoli con /nuovo. Il dubbio è conservato.')
+        return
+    if any(format_calendar_event(e)['start_time'].date() < datetime.now(ROME_TZ).date() for e in events):
+        pending['parsed_data']['domanda'] = 'La data è passata. Indicami la data futura esatta; non cambio automaticamente l’anno.'
+        await show_dialog(update, context, pending)
+        return
+    pending['write_trace'] = pending.get('write_trace') or 'dialog:'+pending['_id']+':'+str(pending['_rev'])
+    pending['mode'] = 'write_uncertain'
+    dialog_store(context).save(pending)  # Persist intent before any Calendar call.
+    results = []
+    for event in events:
+        result = await asyncio.to_thread(create_google_calendar_event, format_calendar_event(event), pending['write_trace'])
+        if not result:
+            pending['parsed_data']['domanda'] = 'Non ho ancora verificato tutti gli eventi. Premi Conferma per verificare o completare lo stesso tentativo, senza crearne una copia. I dati restano salvati.'
+            await show_dialog(update, context, pending)
+            return
+        results.append(result)
+    clear_pending_clarification(context, pending['chat_id'], pending['user_id'])
+    await update.effective_message.reply_text('\n\n'.join('✅ Evento verificato: '+str(r.get('summary',''))+'\n'+str(r.get('htmlLink','')) for r in results))
+    log_pipeline_event('clarification_resolved', pending['trace_id'], action='confirm', eventi_creati=len(results), eventi_totali=len(events))
+
+
+async def handle_dialog_text(update, context, pending):
+    text = update.message.text
+    choice = normalize_whitespace(text).casefold().strip(' .!')
+    pending.setdefault('history', []).append({'role':'user','text':text})
+    dialog_store(context).save(pending)
+    if choice in {'confermo','si','sì','si confermo','sì confermo','conferma','ok confermo','va bene confermo'}:
+        await confirm_dialog(update, context, pending)
+        return
+    if pending.get('mode') == 'write_uncertain':
+        await update.message.reply_text('Devo prima verificare l’esito del tentativo precedente. Premi Conferma: userò gli stessi identificativi, senza duplicare gli eventi.')
+        return
+    if choice in {'annulla','non creare','annulla tutto','lascia perdere'}:
+        clear_pending_clarification(context, pending['chat_id'], pending['user_id'])
+        await update.message.reply_text('Annullato: non creo eventi per questo dubbio.')
+        return
+    if choice in {'no','no grazie'}:
+        pending['parsed_data']['domanda'] = 'Va bene, dimmi cosa correggere. Conservo gli altri dati.'
+        await show_dialog(update, context, pending)
+        return
+    await update.message.chat.send_action(action='typing')
+    parsed = await asyncio.to_thread(parse_message_with_ai_rewrite, pending['original_message'], text,
+                                    pending['parsed_data'], pending['trace_id'], pending.get('history', []), pending.get('created_at'))
+    if not parsed:
+        await update.message.reply_text('Non sono riuscito a rileggere il chiarimento. Il dialogo e i dati sono salvati: puoi riprovare senza riscrivere tutto.')
+        return
+    parsed['eventi'] = candidate_events(parsed)
+    if parsed.get('tipo') == 'rinvio':
+        parsed['tipo'] = 'conferma'
+        parsed['domanda'] = 'Ho aggiornato i dati. Confermi questo riepilogo?'
+    elif parsed.get('tipo') not in {'conferma','data_passata'}:
+        parsed = dict(pending['parsed_data'], domanda=parsed.get('messaggio') or 'Dimmi quale dato va corretto, oppure scrivi annulla per chiudere.')
+    pending['parsed_data'] = parsed
+    pending['mode'] = 'awaiting_action'
+    await show_dialog(update, context, pending)
+
+
+async def handle_new(update, context):
+    dialog_store(context).park(update.effective_chat.id, update.effective_user.id)
+    clear_mask_form(context, update.effective_chat.id, update.effective_user.id)
+    await update.effective_message.reply_text('Scrivi il nuovo messaggio. Gli altri dubbi restano salvati e li ritrovi con /dubbi.')
+
+
+async def handle_dialog_list(update, context):
+    rows = dialog_store(context).list_open(update.effective_chat.id, update.effective_user.id)
+    if not rows:
+        await update.effective_message.reply_text('Non hai dubbi aperti in questa chat.')
+        return
+    keyboard = [[InlineKeyboardButton(str(i+1)+'. '+str(r.get('original_message',''))[:45], callback_data='dialog:open:'+r['_id'])] for i,r in enumerate(rows)]
+    await update.effective_message.reply_text('Scegli il dialogo da continuare:', reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def handle_dialog_select(update, context):
+    query = update.callback_query
+    identity = str(query.data).removeprefix('dialog:open:')
+    pending = dialog_store(context).select(identity, update.effective_chat.id, update.effective_user.id)
+    if not pending:
+        await query.answer('Dialogo non disponibile per questo utente.', show_alert=True)
+        return
+    await query.answer()
+    clear_mask_form(context, update.effective_chat.id, update.effective_user.id)
+    await show_dialog(update, context, pending)
+
 
 
 def build_persistent_keyboard() -> ReplyKeyboardMarkup:
@@ -1279,6 +1304,8 @@ def validate_and_normalize_parsed_data(parsed_data: dict[str, Any], original_mes
         normalized['domanda'] = normalize_whitespace(str(parsed_data.get('domanda', 'Va bene così?')))
         eventi = parsed_data.get('eventi', [])
         normalized['eventi'] = eventi if isinstance(eventi, list) else []
+        if not normalized['eventi']:
+            normalized['eventi'] = candidate_events(normalized)
         return normalized
 
     if tipo == 'data_passata':
@@ -1433,8 +1460,11 @@ def should_require_confirmation(parsed_data: dict[str, Any], analysis: dict[str,
             return "La parte sembra in realta' un tribunale, una corte o un contesto di udienza."
         if looks_like_reference(parte):
             return "La parte sembra in realta' un riferimento di ruolo o di procedimento."
-        if looks_like_lawyer(parte):
+        explicit_party = bool(re.search(r'(?:assistito|imputato|parte)\s*[:=]?\s*'+re.escape(parte), normalized_message, re.IGNORECASE))
+        if looks_like_lawyer(parte) and not explicit_party:
             return "La parte sembra in realta' un avvocato o un difensore."
+        if giudice.casefold() in PROSECUTOR_SURNAMES:
+            return 'Il cognome indicato come giudice risulta nel riferimento dei PM/VPO: chiarisci il ruolo e il giudice, senza sostituzioni automatiche.'
         if re.search(r'\bavv\.?\b', giudice.lower()):
             return "Il nome del giudice sembra in realtà un avvocato o un riferimento difensivo."
         if looks_like_lawyer(giudice):
@@ -1514,10 +1544,6 @@ def get_google_calendar_service():
 
 def parse_message_with_ai(message_text: str, trace_id: Optional[str] = None):
     """Usa Claude per interpretare il messaggio mantenendo lettura completa e validazione finale."""
-    if not client:
-        logger.error("Client Anthropic non configurato")
-        return None
-
     try:
         analysis = build_message_analysis(message_text)
         normalized_message = analysis['normalized_message']
@@ -1644,7 +1670,7 @@ Rispondi solo con JSON valido."""
                 non_hearing_keywords=analysis.get('has_non_hearing_keywords'),
             )
             log_pipeline_event(
-                'claude_request_prepared',
+                'llm_request_prepared',
                 trace_id,
                 prompt_version=prompt_version,
                 prompt_hash=hash_text(prompt),
@@ -1652,30 +1678,13 @@ Rispondi solo con JSON valido."""
                 normalized_message=normalized_message,
             )
 
-        last_exc: Exception = RuntimeError("Anthropic API unreachable")
-        message = None
-        for _attempt in range(3):
-            try:
-                message = client.messages.create(
-                    model=ANTHROPIC_MODEL,
-                    max_tokens=1000,
-                    messages=[
-                        {"role": "user", "content": prompt}
-                    ]
-                )
-                break
-            except Exception as _exc:
-                last_exc = _exc
-                logger.warning(f"Anthropic API attempt {_attempt + 1}/3 failed: {_exc}")
-                if _attempt < 2:
-                    time.sleep(2 ** _attempt)
-        if message is None:
-            raise last_exc
-
-        response_text = message.content[0].text.strip()
+        response_text = complete_json(prompt, api_client=client,
+            audit=lambda provider, status, elapsed: log_pipeline_event(
+                'llm_provider_attempt', trace_id or 'untraced', provider=provider,
+                status=status, elapsed_seconds=elapsed))
         if trace_id:
             log_pipeline_event(
-                'claude_response_received',
+                'llm_response_received',
                 trace_id,
                 raw_response=response_text,
                 raw_response_hash=hash_text(response_text),
@@ -1687,7 +1696,7 @@ Rispondi solo con JSON valido."""
                 log_pipeline_event(
                     'pipeline_failed',
                     trace_id,
-                    failed_stage='claude_response_received',
+                    failed_stage='llm_response_received',
                     error='Risposta AI non parseabile',
                     raw_response=response_text,
                 )
@@ -1800,10 +1809,8 @@ def create_google_calendar_event(event_data, trace_id: Optional[str] = None):
                 description_length=len(event.get('description', '')),
             )
         
-        created_event = service.events().insert(
-            calendarId=GOOGLE_CALENDAR_ID,
-            body=event
-        ).execute()
+        key = (trace_id or 'direct:'+uuid4().hex) + ':' + event['summary'] + ':' + start_dt.isoformat()
+        created_event = insert_verified(service, GOOGLE_CALENDAR_ID, event, key)
         
         logger.info(f"Evento creato: {created_event.get('htmlLink')}")
         if trace_id:
@@ -2108,10 +2115,10 @@ async def reply_with_keyboard_and_log(
     )
 
 
-def build_reanalysis_prompt(original_message: str, followup_text: str, previous_parsed_data: dict[str, Any]) -> str:
+def build_reanalysis_prompt(original_message: str, followup_text: str, previous_parsed_data: dict[str, Any], history=None, reference_at=None) -> str:
     return f"""Sei il lettore intelligente dei messaggi di Fabio, avvocato penalista italiano.
 
-Hai gia' analizzato un messaggio, ma Fabio lo ha riscritto per chiarire meglio il caso.
+Stai continuando lo stesso dialogo con Fabio, non leggendo un messaggio isolato.\nData del messaggio originale: {reference_at or datetime.now(ROME_TZ).isoformat()}\nUltimi 20 turni del dialogo (storia completa conservata dal backend): {json.dumps((history or [])[-20:], ensure_ascii=False)}
 
 Messaggio originale:
 {original_message}
@@ -2139,13 +2146,10 @@ def parse_message_with_ai_rewrite(
     followup_text: str,
     previous_parsed_data: dict[str, Any],
     trace_id: Optional[str] = None,
+    history=None, reference_at=None,
 ) -> Optional[dict[str, Any]]:
-    if not client:
-        logger.error("Client Anthropic non configurato")
-        return None
-
     try:
-        prompt = build_reanalysis_prompt(original_message, followup_text, previous_parsed_data)
+        prompt = build_reanalysis_prompt(original_message, followup_text, previous_parsed_data, history, reference_at)
         if trace_id:
             log_pipeline_event(
                 'clarification_reanalysis_requested',
@@ -2154,28 +2158,14 @@ def parse_message_with_ai_rewrite(
                 followup_text=followup_text,
                 previous_parsed_data=previous_parsed_data,
             )
-        last_exc2: Exception = RuntimeError("Anthropic API unreachable")
-        message = None
-        for _attempt in range(3):
-            try:
-                message = client.messages.create(
-                    model=ANTHROPIC_MODEL,
-                    max_tokens=1000,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                break
-            except Exception as _exc:
-                last_exc2 = _exc
-                logger.warning(f"Anthropic API rewrite attempt {_attempt + 1}/3 failed: {_exc}")
-                if _attempt < 2:
-                    time.sleep(2 ** _attempt)
-        if message is None:
-            raise last_exc2
-        response_text = message.content[0].text.strip()
+        response_text = complete_json(prompt, api_client=client,
+            audit=lambda provider, status, elapsed: log_pipeline_event(
+                'llm_provider_attempt', trace_id or 'untraced', provider=provider,
+                status=status, elapsed_seconds=elapsed))
         parsed_data = extract_json_object(response_text)
         if not parsed_data:
             return None
-        parsed_data = validate_and_normalize_parsed_data(parsed_data, normalize_message_text(followup_text))
+        parsed_data = validate_and_normalize_parsed_data(parsed_data, normalize_message_text(original_message+'\n'+followup_text))
         return parsed_data
     except Exception as exc:
         logger.error(f"Errore rilettura dubbio: {exc}")
@@ -2267,6 +2257,7 @@ async def handle_mask_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not update.effective_chat or not update.effective_user or not update.message:
         return
 
+    dialog_store(context).park(update.effective_chat.id, update.effective_user.id)
     trace_id = build_trace_id(update)
     form = set_mask_form(
         context,
@@ -2353,36 +2344,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update.effective_chat.id if update.effective_chat else None,
         update.effective_user.id if update.effective_user else None,
     )
-    if pending and pending.get('mode') == 'awaiting_rewrite':
-        log_pipeline_event(
-            'clarification_text_received',
-            trace_id,
-            chat_id=update.effective_chat.id if update.effective_chat else None,
-            message_id=update.effective_message.message_id if update.effective_message else None,
-            user_id=update.effective_user.id if update.effective_user else None,
-            username=update.effective_user.username if update.effective_user else None,
-            text=message_text,
-            pending_trace_id=pending.get('trace_id'),
-        )
-        await update.message.chat.send_action(action="typing")
-        reparsed = parse_message_with_ai_rewrite(
-            pending.get('original_message', ''),
-            message_text,
-            pending.get('parsed_data', {}),
-            trace_id=trace_id,
-        )
-        clear_pending_clarification(
-            context,
-            update.effective_chat.id if update.effective_chat else None,
-            update.effective_user.id if update.effective_user else None,
-        )
-        if not reparsed:
-            await reply_and_log(update, trace_id, "⚠️ Non sono riuscito a rileggere la riscrittura. Prova a riscrivere il messaggio in modo piu' lineare.", 'clarification_rewrite_failed')
-            return
-        parsed_data = reparsed
-    else:
-        await update.message.chat.send_action(action="typing")
-        parsed_data = parse_message_with_ai(message_text, trace_id=trace_id)
+    if pending:
+        await handle_dialog_text(update, context, pending)
+        return
+    await update.message.chat.send_action(action="typing")
+    parsed_data = await asyncio.to_thread(parse_message_with_ai, message_text, trace_id)
     
     if not parsed_data:
         await reply_and_log(update, trace_id, "⚠️ Non sono riuscito a interpretare il messaggio.", 'parse_failed')
@@ -2415,77 +2381,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ═══════════════════════════════════════════════════════════
     
     if tipo == 'conferma':
-        dubbio = parsed_data.get('dubbio', '')
-        interpretazione = parsed_data.get('interpretazione', {})
-        domanda = parsed_data.get('domanda', 'Va bene così?')
-        
-        msg = f"❓ Ho un dubbio\n\n"
-        msg += f"📋 {dubbio}\n\n"
-        msg += f"La mia interpretazione:\n"
-        msg += f"   👤 Parte: {interpretazione.get('parte', 'N/A')}\n"
-        msg += f"   ⚖️ Giudice: {interpretazione.get('giudice', 'N/A')}\n"
-        msg += f"   📍 Luogo: {interpretazione.get('luogo', 'N/A')}\n"
-        msg += f"   📅 Data: {interpretazione.get('data', 'N/A')}\n"
-        msg += f"   🕐 Ora: {interpretazione.get('ora', 'N/A')}\n\n"
-        msg += f"💬 {domanda}"
-        set_pending_clarification(
-            context,
-            trace_id=trace_id,
-            chat_id=update.effective_chat.id if update.effective_chat else None,
-            user_id=update.effective_user.id if update.effective_user else None,
-            original_message=message_text,
-            parsed_data=parsed_data,
-            reason=dubbio,
-        )
-        log_pipeline_event(
-            'clarification_opened',
-            trace_id,
-            chat_id=update.effective_chat.id if update.effective_chat else None,
-            message_id=update.effective_message.message_id if update.effective_message else None,
-            user_id=update.effective_user.id if update.effective_user else None,
-            username=update.effective_user.username if update.effective_user else None,
-            text=message_text,
-            reason=dubbio,
-            interpretation=interpretazione,
-        )
-        await reply_with_keyboard_and_log(
-            update,
-            trace_id,
-            msg,
-            'conferma',
-            build_confirmation_keyboard(),
-            tipo=tipo,
-            interpretazione=interpretazione,
-        )
+        pending = set_pending_clarification(context, trace_id=trace_id,
+            chat_id=update.effective_chat.id, user_id=update.effective_user.id,
+            original_message=message_text, parsed_data=parsed_data,
+            reason=parsed_data.get('dubbio') or 'Chiarisci o conferma questi dati.')
+        await show_dialog(update, context, pending)
         return
-    
-    # ═══════════════════════════════════════════════════════════
-    # GESTIONE DATA PASSATA
-    # ═══════════════════════════════════════════════════════════
-    
+
     if tipo == 'data_passata':
-        data_letta = parsed_data.get('data_letta', '')
-        opzioni = parsed_data.get('opzioni', [])
-        domanda = parsed_data.get('domanda', '')
-        
-        msg = f"❌ Data nel passato\n\n"
-        msg += f"📅 Ho letto: {data_letta}\n\n"
-        msg += f"💡 Intendevi:\n"
-        if opzioni:
-            for opt in opzioni:
-                msg += f"   {opt.get('id', '?').upper()}) {opt.get('data', '')}\n"
-            msg += f"\n💬 Rispondi con una delle opzioni indicate"
-        else:
-            msg += "   Non ho ricevuto opzioni affidabili.\n"
-            msg += "\n💬 Riscrivi il messaggio indicando la data completa."
-        
-        await reply_and_log(update, trace_id, msg, 'data_passata', tipo=tipo, data_letta=data_letta, opzioni=opzioni)
+        pending = set_pending_clarification(context, trace_id=trace_id,
+            chat_id=update.effective_chat.id, user_id=update.effective_user.id,
+            original_message=message_text, parsed_data=parsed_data,
+            reason='La data risulta passata: indicami quella corretta.')
+        await show_dialog(update, context, pending)
         return
-    
-    # ═══════════════════════════════════════════════════════════
-    # GESTIONE RINVII (creazione eventi)
-    # ═══════════════════════════════════════════════════════════
-    
+
     if tipo == 'rinvio':
         eventi = parsed_data.get('eventi', [])
         correzioni = parsed_data.get('correzioni', [])
@@ -2580,84 +2490,26 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Si è verificato un errore. Riprova.")
 
 
-async def handle_clarification_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_clarification_callback(update, context):
     query = update.callback_query
     if not query or not update.effective_chat or not update.effective_user:
         return
-
-    await query.answer()
-    action = (query.data or '').replace('clarify:', '', 1)
+    parts = str(query.data).split(':')
     pending = get_pending_clarification(context, update.effective_chat.id, update.effective_user.id)
-    if not pending:
-        await query.edit_message_text("ℹ️ Questo dubbio non è piu' attivo. Rimandami il messaggio se vuoi riprovare.")
+    if len(parts) != 4 or not pending or parts[2] != pending['_id'] or parts[3] != str(pending['_rev']):
+        await query.answer('Questo pulsante è precedente o appartiene a un altro dialogo. Usa /dubbi per il riepilogo attuale.', show_alert=True)
         return
-
-    trace_id = pending.get('trace_id') or build_trace_id(update)
-    log_pipeline_event(
-        'clarification_button_clicked',
-        trace_id,
-        chat_id=update.effective_chat.id,
-        message_id=update.effective_message.message_id if update.effective_message else None,
-        user_id=update.effective_user.id,
-        username=update.effective_user.username,
-        action=action,
-    )
-
-    if action == 'cancel':
-        clear_pending_clarification(context, update.effective_chat.id, update.effective_user.id)
-        await query.edit_message_text("❌ Va bene, non creo alcun evento per questo messaggio.")
-        log_pipeline_event('clarification_cancelled', trace_id, chat_id=update.effective_chat.id, user_id=update.effective_user.id)
-        return
-
-    if action == 'rewrite':
-        pending['mode'] = 'awaiting_rewrite'
-        await query.edit_message_text(
-            "🔁 Riscrivi il messaggio in forma piu' chiara. Lo rileggero' tenendo conto del dubbio appena aperto."
-        )
-        return
-
+    await query.answer()
+    action = parts[1]
     if action == 'confirm':
-        parsed_data = pending.get('parsed_data') or {}
-        eventi = parsed_data.get('eventi', [])
-        if not eventi:
-            clear_pending_clarification(context, update.effective_chat.id, update.effective_user.id)
-            await query.edit_message_text("⚠️ Non trovo eventi utilizzabili nel dubbio salvato.")
-            return
-
-        risposte = []
-        eventi_creati = 0
-        for evento in eventi:
-            event_data = format_calendar_event(evento)
-            if not event_data:
-                risposte.append("⚠️ Errore formattazione evento.")
-                continue
-            created = create_google_calendar_event(event_data, trace_id=trace_id)
-            if created:
-                eventi_creati += 1
-                resp = f"✅ Evento creato\n"
-                resp += f"   👤 {evento.get('parte', 'N/A')}\n"
-                resp += f"   ⚖️ {evento.get('giudice', 'N/A')}\n"
-                resp += f"   📍 {evento.get('luogo', 'N/A')}\n"
-                resp += f"   📅 {evento.get('data', 'N/A')} 🕐 {evento.get('ora', 'N/A')}\n"
-                resp += f"   🔗 {created.get('htmlLink', '')}"
-            else:
-                resp = "⚠️ Errore nella creazione dell'evento."
-            risposte.append(resp)
-
+        await confirm_dialog(update, context, pending)
+    elif pending.get('mode') == 'write_uncertain':
+        await update.effective_message.reply_text('Prima devo verificare l’esito del tentativo precedente. Premi Conferma per riprendere la verifica senza duplicati.')
+    elif action == 'cancel':
         clear_pending_clarification(context, update.effective_chat.id, update.effective_user.id)
-        await query.edit_message_text("\n\n".join(risposte))
-        log_pipeline_event(
-            'clarification_resolved',
-            trace_id,
-            chat_id=update.effective_chat.id,
-            user_id=update.effective_user.id,
-            action='confirm',
-            eventi_creati=eventi_creati,
-            eventi_totali=len(eventi),
-        )
-        return
-
-    await query.edit_message_text("ℹ️ Azione non riconosciuta.")
+        await query.edit_message_text('Annullato: non creo eventi per questo dubbio.')
+    elif action == 'rewrite':
+        await update.effective_message.reply_text('Scrivimi qui la correzione o la domanda. Conservo il messaggio originale e tutto il dialogo.')
 
 
 async def handle_mask_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2722,91 +2574,23 @@ async def handle_mask_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if action == 'mask:create':
         fields = form.get('fields', {})
-        rinvio_value = normalize_whitespace(str(fields.get('rinvio', '') or ''))
-        if not rinvio_value:
-            await query.edit_message_text(
-                f"⚠️ Per creare l'evento dalla maschera mi serve almeno il campo Rinvio.\n\n{render_mask_summary(fields)}",
-                reply_markup=build_mask_keyboard(),
-            )
+        if not normalize_whitespace(str(fields.get('rinvio', '') or '')):
+            await query.edit_message_text('Inserisci prima il rinvio. Puoi indicare i dati mancanti anche nel successivo dialogo.', reply_markup=build_mask_keyboard())
             return
-
         mask_text = build_mask_prompt_text(fields)
-        log_pipeline_event(
-            'mask_parse_requested',
-            trace_id,
-            chat_id=update.effective_chat.id,
-            user_id=update.effective_user.id,
-            mask_text=mask_text,
-            fields=fields,
-        )
-        parsed_data = parse_message_with_ai(mask_text, trace_id=trace_id)
-        if not parsed_data:
-            await query.edit_message_text(
-                f"⚠️ Non riesco a interpretare la maschera in modo affidabile.\n\n{render_mask_summary(fields)}",
-                reply_markup=build_mask_keyboard(),
-            )
+        parsed_data = await asyncio.to_thread(parse_message_with_ai, mask_text, trace_id)
+        if not parsed_data or parsed_data.get('tipo') not in {'rinvio','conferma','data_passata'}:
+            await query.edit_message_text('La maschera non contiene ancora un rinvio utilizzabile. Correggi i campi e riprova.', reply_markup=build_mask_keyboard())
             return
-
-        if parsed_data.get('tipo') == 'conferma':
-            await query.edit_message_text(
-                "⚠️ La maschera e' ancora ambigua.\n\n"
-                f"{parsed_data.get('dubbio', 'Mi serve un dettaglio in piu.')}\n\n"
-                f"{render_mask_summary(fields)}",
-                reply_markup=build_mask_keyboard(),
-            )
-            return
-
-        if parsed_data.get('tipo') != 'rinvio':
-            await query.edit_message_text(
-                f"⚠️ La maschera non ha prodotto un rinvio utilizzabile (`{parsed_data.get('tipo', 'sconosciuto')}`).\n\n{render_mask_summary(fields)}",
-                reply_markup=build_mask_keyboard(),
-            )
-            return
-
-        eventi = parsed_data.get('eventi', [])
-        if not eventi:
-            await query.edit_message_text(
-                f"⚠️ Non trovo eventi utilizzabili dopo la lettura della maschera.\n\n{render_mask_summary(fields)}",
-                reply_markup=build_mask_keyboard(),
-            )
-            return
-
-        evento = eventi[0]
-        event_data = format_calendar_event(evento or {})
-        if not event_data:
-            await query.edit_message_text(
-                f"⚠️ Non riesco a formattare l'evento letto dalla maschera.\n\n{render_mask_summary(fields)}",
-                reply_markup=build_mask_keyboard(),
-            )
-            return
-
-        created = create_google_calendar_event(event_data, trace_id=trace_id)
-        if not created:
-            await query.edit_message_text(
-                f"⚠️ Errore nella creazione dell'evento da maschera.\n\n{render_mask_summary(fields)}",
-                reply_markup=build_mask_keyboard(),
-            )
-            return
-
+        if parsed_data['tipo'] == 'rinvio':
+            parsed_data['tipo'] = 'conferma'
+            parsed_data['domanda'] = 'Confermi gli eventi letti dalla maschera? Puoi correggere qui qualsiasi dato.'
+        pending = set_pending_clarification(context, trace_id=trace_id,
+            chat_id=update.effective_chat.id, user_id=update.effective_user.id,
+            original_message=mask_text, parsed_data=parsed_data,
+            reason=parsed_data.get('dubbio') or 'Conferma o chiarisci i dati della maschera.')
         clear_mask_form(context, update.effective_chat.id, update.effective_user.id)
-        response = (
-            "✅ Evento creato da maschera\n"
-            f"   👤 {evento.get('parte', 'N/A')}\n"
-            f"   ⚖️ {evento.get('giudice', 'N/A')}\n"
-            f"   📍 {evento.get('luogo', 'N/A') or 'N/A'}\n"
-            f"   📅 {evento.get('data', 'N/A')} 🕐 {evento.get('ora', 'N/A')}\n"
-            f"   🔗 {created.get('htmlLink', '')}"
-        )
-        await query.edit_message_text(response)
-        log_pipeline_event(
-            'mask_event_created',
-            trace_id,
-            chat_id=update.effective_chat.id,
-            user_id=update.effective_user.id,
-            evento=evento,
-            html_link=created.get('htmlLink'),
-            parsed_data=parsed_data,
-        )
+        await show_dialog(update, context, pending)
         return
 
     await query.edit_message_text("ℹ️ Azione maschera non riconosciuta.")
@@ -2819,12 +2603,14 @@ def main():
         return
     
     if not ANTHROPIC_API_KEY:
-        logger.error("ANTHROPIC_API_KEY non configurato!")
-        return
+        logger.warning("Fallback finale Claude API non configurato; uso i CLI in abbonamento.")
     
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     application.add_handler(CommandHandler('1', handle_mask_start))
+    application.add_handler(CommandHandler('nuovo', handle_new))
+    application.add_handler(CommandHandler('dubbi', handle_dialog_list))
+    application.add_handler(CallbackQueryHandler(handle_dialog_select, pattern=r'^dialog:open:'))
     application.add_handler(CommandHandler('turni', handle_turni))
     application.add_handler(CommandHandler('turni_rimuovi', handle_turni_rimuovi))
     application.add_handler(CommandHandler('export_chat', handle_export_chat))

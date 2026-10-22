@@ -20,11 +20,21 @@ Shared sync log for all AI agents working on WORKDB and RinviaBot v3.
 
 ## Current build
 
-- Build: `0.4.13`
+- Build: `0.5.0`
 - Updated at: `2026-10-22`
 - Updated by: `Codex`
 
 ## Changelog (newest first)
+
+### 0.5.0 - 2026-10-22 - Codex
+- Switched extraction and clarification to subscription-first Codex `gpt-6.1-sol` low → Antigravity `gemini-4-argon-low` → existing Claude API last resort. Verified the dedicated Codex 0.159.3 path after the old global CLI rejected the model; no global CLI or shared runtime changed.
+- Added encrypted isolated CLI login, runtime homes, refresh preservation, provider audit and subscription-only live probes.
+- Replaced dead-end clarification handling with persistent SQLite conversations, contextual followups, explicit final confirmation, owner/revision-bound buttons, `/nuovo` and `/dubbi`. Manual masks enter the same conversation flow.
+- Added intent-bound Calendar IDs, payload checks, readback and timeout reconciliation. Corrections are blocked while a write remains uncertain.
+- Versioned role-aware public magistrate sources and professional-name hints derived from read-only STUDIO registries/calendar. Read 5 colleague dossiers, 21 substitution records and 589 calendar events over 6 pages; fetched all 15 truncated descriptions. No client source material entered Git and no canonical SAI2 registry was modified.
+- Runtime reading rules in `reading/SKILL.md`; reusable skills `rinviabot-ionos` and `rinviabot-lettura` updated/validated.
+- Validation: 35 automated tests; live Codex and Argon; integrated synthetic conversation and verified Calendar write/read/cleanup with Telegram simulated and paid fallback disabled; production health and encrypted own-login refresh snapshot succeeded. Human Telegram check requested separately; do not conflate it with the synthetic probe.
+- Files: `bot.py`, `llm_runtime.py`, `conversations.py`, `calendar_write.py`, `reference_data.py`, `reference/people.json`, `reference/README.md`, `reading/SKILL.md`, `tests/test_*.py`, `deploy/ionos/{launch.py,save_auth.py,rinviabot.service,health.py,provider_probe.py,dialogue_probe.py,README.md}`, `README.md`, `AISYNC.md`.
 
 ### 0.4.13 - 2026-10-22 - Codex
 - Migrated the existing Telegram bot and Google Calendar configuration from Render to isolated IONOS service `rinviabot.service`; Render suspended and retained for rollback.

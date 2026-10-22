@@ -108,3 +108,87 @@ locale della vecchia istanza gratuita non è stato esportato: non dichiarare
 migrato lo storico locale Render. Gli eventi Google e le chat Telegram restano
 nelle rispettive fonti, con la loro identità. Conservazione e backup periodico
 dello stato VPS non sono stati aggiunti come nuova automazione in questa fase.
+
+## Aggiornamento 0.5.0 — lettura e dialoghi (22 ottobre 2026)
+
+La catena operativa è ora:
+
+1. Codex CLI da abbonamento, `gpt-6.1-sol`, ragionamento `low`.
+2. Antigravity CLI da abbonamento, `gemini-4-argon-low`.
+3. Claude API, modello della credenziale originale, solo dopo fallimento dei due CLI.
+
+Il fallback API rimane a consumo: non dichiarare costo zero in assoluto.
+`llm_provider_attempt` registra provider, categoria di esito e durata senza
+chiavi o diagnostica grezza. Un guasto al logging non forza un fallback a pagamento.
+I subprocess ricevono un ambiente minimo, privo dei token Telegram/Calendar/API.
+Prompt e diagnostica CLI non vengono stampati nei log di servizio dall'adapter.
+
+Rinviabot ha una propria installazione Codex CLI `0.159.3` sotto
+`/opt/rinviabot/toolchain/node_modules/.bin/codex`. La prima prova con il vecchio
+binario globale `0.156.1` aveva rifiutato Sol 6.1; il percorso corrente, copiato
+in sola lettura dalla toolchain SAI2 e installato separatamente, è stato provato
+con successo. Non aggiornare il binario globale per risolvere un problema locale.
+Argon restituisce il testo nel campo `response` dell'envelope `status=SUCCESS`.
+
+Login separati da configurazioni e cronologie QWE/STUDIO: credenziale cifrata
+`/etc/rinviabot/llm-auth.cred`, caricata come `llm-auth.json`; copie mutabili solo
+in `/run/rinviabot/codex-home` e `/run/rinviabot/agy-home`. Il root hook
+`save_auth.py` conserva gli eventuali refresh al termine del servizio in una
+nuova credenziale cifrata. Non copia file nel progetto QWE/STUDIO. La copia
+iniziale dei login condivisi è un bootstrap: il runtime usa i propri file.
+I file nelle home CLI sono segreti temporanei; non esportarli in log o Git.
+
+### Dialoghi durevoli
+
+`/var/lib/rinviabot/conversations.sqlite3` conserva originale, candidato,
+storia, autore/chat, revisione e intento di scrittura. Il contesto LLM comprende
+originale, candidato corrente e ultimi 20 turni; la storia completa resta nel DB.
+Le maschere in compilazione restano ancora in memoria fino al passaggio al dialogo.
+
+- Il messaggio successivo continua il dubbio senza dover premere “Riscrivi”.
+- Una correzione non crea automaticamente un evento: viene mostrato un riepilogo.
+- `confermo`/`sì` o il pulsante corrente confermano; `no` apre una correzione,
+  `annulla` chiude senza scrivere, salvo un tentativo già incerto da verificare.
+- `/nuovo` mette da parte il dubbio e apre un altro input; `/dubbi` lo riprende.
+- Ogni pulsante di conferma contiene ID e revisione del dialogo ed è legato
+  all'autore nella stessa chat. Pulsanti vecchi o di un altro utente sono rifiutati.
+- Anche la maschera `/1` passa al dialogo per ambiguità e conferma finale.
+- Gli ID degli eventi sono deterministici per intento. Le scritture vengono
+  rilette, controllando impronta, dati e stato. Timeout, doppio clic e retry
+  non autorizzano un secondo inserimento con un nuovo ID. Dopo un esito incerto
+  i dati sono bloccati fino alla verifica dello stesso tentativo.
+
+Riferimenti: `reference/people.json`, `reference/README.md`. Regole realmente
+caricate a ogni inferenza: `reading/SKILL.md`. La tabella distingue giudici,
+PM/VPO, uffici, nomi storici e colleghi; non modifica i registri SAI2.
+
+### Prove di questo rilascio
+
+35 test automatici riusciti: routing/costi fallback, envelope Argon,
+segreti esclusi dai subprocess, persistenza, isolamento autori, pulsanti vecchi,
+correzione senza scrittura, annullamento, maschera, date passate, retry e
+conflitti di payload/calendario, classificazione dei riferimenti.
+
+Prove live in ambiente isolato con i limiti del servizio: Sol 6.1 e Argon
+rispondono; il parser completo usa Codex con esito positivo. Prova integrata
+`dialogue_probe.py --write-calendar`: orario mancante → chiarimento “alle 11” →
+riepilogo → conferma → inserimento e rilettura Google → rimozione verificata
+soltanto dell'evento sintetico. Telegram era simulato in questa prova e la
+riserva API disabilitata. La verifica umana Telegram è distinta dalla fixture.
+Ricevuta privata: `/var/lib/rinviabot/dialogue-proof.json`.
+
+`provider_probe.py` usa i due abbonamenti e non scrive su Telegram/Calendar.
+`dialogue_probe.py` senza flag non scrive in Calendar; `--write-calendar` richiede
+un collaudo con scrittura autorizzato e cancella solo il proprio evento sintetico.
+Questi script vanno eseguiti in transient unit con entrambe le credenziali
+`rinviabot.json` e `llm-auth.json`, runtime directory dedicata ed ambiente
+`RINVIABOT_LLM_RUNTIME=/run/<directory-dedicata>`, evitando di usare una seconda
+istanza di polling o le home del servizio mentre sta elaborando messaggi.
+
+Rollback della sola versione: backup codice
+`/opt/rinviabot/releases/0.4.13-app.tar.gz` e unit
+`/opt/rinviabot/releases/0.4.13-rinviabot.service`; fermare solo Rinviabot,
+conservare prima i dialoghi e lo stato attuali, ripristinare codice/unit e
+riavviare. La versione 0.4.13 non gestisce i nuovi dialoghi durevoli e usa Claude
+API direttamente: dichiarare questi limiti prima di un rollback. Render resta
+sospeso e non va coinvolto in un semplice rollback applicativo sulla VPS.

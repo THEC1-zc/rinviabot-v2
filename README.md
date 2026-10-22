@@ -2,6 +2,8 @@
 
 > **Produzione dal 22 ottobre 2026:** Rinviabot gira sulla VPS IONOS in polling, con lo stesso bot e calendario. Render è sospeso. Configurazione, controlli e rollback: [deploy/ionos/README.md](deploy/ionos/README.md). Le istruzioni Render seguenti sono storiche.
 
+> **Tuning 0.5.0:** Sol 6.1 low → Argon low → Claude API come ultima riserva. I dubbi proseguono come dialoghi salvati: correggi un dato, conferma il riepilogo; `/nuovo` apre un altro caso e `/dubbi` riprende quelli sospesi. [Nomi, organigramma pubblicato e fonti](reference/README.md); [regole di lettura effettive](reading/SKILL.md).
+
 Bot Telegram con AI intelligente per automatizzare la gestione dei rinvii delle udienze.
 
 ## 🎯 Cosa fa
